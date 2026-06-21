@@ -1739,6 +1739,91 @@ export async function createScriptureShow() {
     history({ id: "UPDATE", newData: { data: show, remember: { project: get(activeProject), index: selectedIndex } }, location: { page: "show", id: "show" } })
 }
 
+// API: build ONE show from an explicit list of references (mixed versions allowed).
+// Each item resolves its own version, and all resulting slides are merged into a
+// single show whose slide groups are the references, in the given order.
+export async function createScriptureCollection(data: { name?: string; items: { scriptureId: string; book: number | string; chapter: number | string; verses: (number | string)[] }[] }) {
+    if (!data?.items?.length) return { error: "no items" }
+
+    // remember the user's current scripture selection so we can restore it after
+    const prevActive = clone(get(activeScripture))
+    const prevTab = get(drawerTabsData).scripture?.activeSubTab || ""
+
+    const mergedSlides: { [key: string]: any } = {}
+    const layoutSlides: any[] = []
+    const mergedMedia: { [key: string]: any } = {}
+    const failed: string[] = []
+    let resolved = 0
+    let firstShow: Show | null = null
+
+    for (const item of data.items) {
+        if (!get(scriptures)[item.scriptureId]) {
+            failed.push(`missing version: ${item.scriptureId}`)
+            continue
+        }
+
+        // point the active scripture at this reference/version, then reuse the
+        // native renderer (templates, verse numbers, smart split all apply)
+        drawerTabsData.update((a) => {
+            if (!a.scripture) (a as any).scripture = { activeSubTab: item.scriptureId }
+            else a.scripture.activeSubTab = item.scriptureId
+            return a
+        })
+        activeScripture.set({ reference: { book: item.book, chapters: [item.chapter], verses: [item.verses] } })
+
+        const biblesContent = await getActiveScripturesContent()
+        if (!biblesContent?.length || !biblesContent[0]) {
+            failed.push(`${item.book} ${item.chapter}`)
+            continue
+        }
+
+        const show = await getScriptureShow(biblesContent)
+        if (!show) {
+            failed.push(`${item.book} ${item.chapter}`)
+            continue
+        }
+        if (!firstShow) firstShow = show
+
+        const layout = Object.values(show.layouts)[0] as any
+        ;(layout?.slides || []).forEach((l: any) => {
+            mergedSlides[l.id] = show.slides[l.id]
+            layoutSlides.push(l)
+        })
+        Object.assign(mergedMedia, show.media || {})
+        resolved++
+    }
+
+    // restore the previous selection
+    activeScripture.set(prevActive)
+    drawerTabsData.update((a) => {
+        if (a.scripture) a.scripture.activeSubTab = prevTab
+        return a
+    })
+
+    if (!resolved || !firstShow || !layoutSlides.length) return { error: "could not resolve any reference", failed }
+
+    const categoryId = createCategory("scripture", "scripture", { isDefault: true, isArchive: true })
+    const layoutID = uid()
+    const templateId = getScriptureTemplateId()
+    const show: Show = new ShowObj(false, categoryId, layoutID, new Date().getTime(), templateId)
+
+    Object.keys(firstShow.meta || {}).forEach((key) => {
+        const value = (firstShow!.meta as any)[key]
+        if (typeof value === "string") (show.meta as any)[key] = value
+    })
+
+    show.name = checkName(data.name || "Scripture")
+    show.slides = mergedSlides
+    show.layouts = { [layoutID]: { name: "", notes: "", slides: layoutSlides } }
+    show.media = mergedMedia
+
+    // commit with a known id (oldData.id is used as the new show's id) and add to the active project
+    const showId = uid()
+    history({ id: "UPDATE", oldData: { id: showId }, newData: { data: show, remember: { project: get(activeProject) } }, location: { page: "show", id: "show" } })
+
+    return { id: showId, name: show.name, slides: layoutSlides.length, resolved, failed }
+}
+
 export async function getScriptureShow(biblesContent: BibleContent[] | null) {
     if (!biblesContent?.length || !biblesContent[0]) return null
 

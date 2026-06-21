@@ -27,7 +27,8 @@ import { formatText } from "../show/formatTextEditor"
 import { getPlainEditorText } from "../show/getTextEditor"
 import { pauseTimeline, setTimelineTime, startTimeline, stopTimeline } from "../timeline/TimelinePlayback"
 import { runActionByName, runActionId, toggleAction } from "./actions"
-import { getOutput, getOutputGroupName, getOutputSlideText, getPlayingAudioData, getPlayingAudioDuration, getPlayingAudioTime, getPlayingPlaylist, getPlayingVideoDuration, getPlayingVideoState, getPlayingVideoTime, getPlaylists, getProject, getProjects, getShow, getShowLayout, getShows, getSlide, getVariable, getVariables } from "./apiGet"
+import { getOutput, getOutputGroupName, getOutputSlideText, getPlayingAudioData, getPlayingAudioDuration, getPlayingAudioTime, getPlayingPlaylist, getPlayingVideoDuration, getPlayingVideoState, getPlayingVideoTime, getPlaylists, getProject, getProjects, getScriptures, getShow, getShowLayout, getShows, getSlide, getVariable, getVariables } from "./apiGet"
+import { createScriptureCollection } from "../drawer/bible/scripture"
 import {
     addGroup,
     addToProject,
@@ -125,6 +126,10 @@ export type API_slide_thumbnail = { showId?: string; layoutId?: string; index?: 
 export type API_seek = { id?: string; seconds: number }
 export type API_media = { path: string; index?: number; data?: any }
 export type API_scripture = { id?: string; reference: string }
+export type API_scripture_collection = {
+    name?: string
+    items: { scriptureId: string; book: number | string; chapter: number | string; verses: (number | string)[] }[]
+}
 export type API_toggle = { id: string; value?: boolean }
 export type API_toggle_specific = { value?: boolean }
 export type API_stage_output_layout = { outputId?: string; stageLayoutId: string }
@@ -262,6 +267,8 @@ export const API_ACTIONS = {
     start_scripture: (data: API_scripture) => startScripture(data), // BC
     scripture_next: () => triggerFunction("scripture_next"), // BC
     scripture_previous: () => triggerFunction("scripture_previous"), // BC
+    get_scriptures: () => getScriptures(),
+    create_scripture_show: (data: API_scripture_collection) => createScriptureCollection(data),
 
     // OUTPUT
     start_webrtc_stream: (data: API_id_optional) => startStreaming(data.id),

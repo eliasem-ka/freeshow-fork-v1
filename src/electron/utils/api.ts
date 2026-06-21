@@ -215,8 +215,9 @@ async function receivedData(data: any = {}, log: (...msg: any[]) => void): Promi
     if (!data?.action) return log("Received message from client, but missing 'action' key.", true)
     log(`Received action ${String(data.action)}`)
 
-    const get = data.action.startsWith("get_")
-    if (get) data.returnId = uid(5)
+    // get_* actions return data; a few non-get actions also return a result (e.g. created show id)
+    const returnsData = data.action.startsWith("get_") || data.action === "create_scripture_show"
+    if (returnsData) data.returnId = uid(5)
 
     sendToMain(ToMain.API_TRIGGER2, data)
 

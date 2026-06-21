@@ -1,6 +1,6 @@
 import { get } from "svelte/store"
 import type { Shows } from "../../../types/Show"
-import { activePlaylist, audioPlaylists, outputs, playingAudio, playingVideos, projects, shows, showsCache, variables, videosData, videosTime } from "../../stores"
+import { activePlaylist, audioPlaylists, outputs, playingAudio, playingVideos, projects, scriptures, shows, showsCache, variables, videosData, videosTime } from "../../stores"
 import { getTextLines } from "../edit/scripts/textStyle"
 import { keysToID } from "../helpers/array"
 import { getFirstActiveOutput } from "../helpers/output"
@@ -11,6 +11,17 @@ import type { API_id_optional, API_slide } from "./api"
 
 export function getShows() {
     return get(shows) as Shows
+}
+
+// list loaded bibles/scriptures so the API can resolve a version name to its id
+export function getScriptures() {
+    return Object.entries(get(scriptures) || {}).map(([id, s]) => ({
+        id,
+        name: s.customName || s.name || "",
+        api: !!s.api,
+        collection: !!s.collection,
+        abbreviation: s.metadata?.abbreviation || ""
+    }))
 }
 
 export async function getShow({ id }: { id: string }) {

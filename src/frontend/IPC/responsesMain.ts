@@ -7,12 +7,13 @@ import type { Show, Slide } from "../../types/Show"
 import { API_ACTIONS, triggerAction } from "../components/actions/api"
 import { receivedMidi } from "../components/actions/midi"
 import { menuClick } from "../components/context/menuClick"
+import { generateScriptureShowFromReference } from "../components/drawer/bible/scripture"
 import { getCurrentTimerValue } from "../components/drawer/timers/timers"
 import { _getVariableValue, getDynamicValue } from "../components/edit/scripts/itemHelpers"
 import { clone, keysToID } from "../components/helpers/array"
 import { addDrawerFolder } from "../components/helpers/dropActions"
 import { history } from "../components/helpers/history"
-import { captureCanvas, setMediaTracks } from "../components/helpers/media"
+import { captureCanvas, getExtension, getFileName, removeExtension, setMediaTracks } from "../components/helpers/media"
 import { getActiveOutputs } from "../components/helpers/output"
 import { loadShows, saveTextCache } from "../components/helpers/setShow"
 import { checkName, getGlobalGroup, getLabelId } from "../components/helpers/show"
@@ -67,6 +68,7 @@ import {
     projectTemplates,
     projectView,
     providerConnections,
+    recentFiles,
     redoHistory,
     shows,
     showsCache,
@@ -367,7 +369,18 @@ export const mainResponses: MainResponses = {
         for (const show of data.shows) {
             const id = show.id
 
-            // TODO: check if name contains scripture reference (and is empty), and load from active scripture
+            // if empty content and name is a scripture reference, generate slides from the active scripture
+            const isEmptyContent = Object.keys(show.slides || {}).length === 0
+            if (isEmptyContent) {
+                const scriptureShow = await generateScriptureShowFromReference(show.name)
+                if (scriptureShow) {
+                    const originalId = show.id
+                    const originalQuickAccess = show.quickAccess
+                    Object.assign(show, scriptureShow)
+                    show.id = originalId
+                    if (originalQuickAccess) show.quickAccess = originalQuickAccess
+                }
+            }
 
             // first find any shows linked to the id
             const linkedShow = linkKey && allShows.find(({ quickAccess }) => quickAccess?.[linkKey] === id)
@@ -471,8 +484,21 @@ export const mainResponses: MainResponses = {
         })
 
         // open closest to today
-        activeProject.set(data.projects.sort((a, b) => a.scheduledTo - b.scheduledTo)[0]?.id)
-        projectView.set(false)
+        const nextProjectId = data.projects.sort((a, b) => a.scheduledTo - b.scheduledTo)[0]?.id
+        if (nextProjectId) {
+            activeProject.set(nextProjectId)
+            projectView.set(false)
+        }
+
+        // store available PCO plans for Live timer setup
+        if (data.providerId === "planningcenter" && data.pcoPlans?.length) {
+            contentProviderData.update((a) => {
+                if (!a.planningcenter) a.planningcenter = {}
+                const existing = a.planningcenter.availablePlans || []
+                a.planningcenter.availablePlans = [...existing.filter((e) => !data.pcoPlans!.some((i) => i.planId === e.planId)), ...data.pcoPlans!]
+                return a
+            })
+        }
     },
     [ToMain.OPEN_FOLDER2]: (a) => {
         const receiveFOLDER = {
@@ -489,9 +515,17 @@ export const mainResponses: MainResponses = {
         const receiveFilePathIMPORT = {
             // Media
             pdf: () => {
-                // convert to images directly - drag and drop to keep as PDF
-                ;(mainData as string[]).forEach((path) => sendMain(Main.PDF_TO_IMAGE, { filePath: path }))
-                // addToProject("pdf", mainData as string[])
+                const paths = mainData as string[]
+                paths.forEach((path) => sendMain(Main.PDF_TO_IMAGE, { filePath: path }))
+
+                // remove any PDFs with the same name from the Recommended project items list
+                const importedNames = paths.map((p) => removeExtension(getFileName(p)).toLowerCase())
+                recentFiles.update((a) => {
+                    const toClear = a.all.filter((p) => getExtension(p) === "pdf" && importedNames.includes(removeExtension(getFileName(p)).toLowerCase()))
+                    if (toClear.length) a.cleared = [...a.cleared, ...toClear]
+                    return a
+                })
+                updateRecentlyAddedFiles()
             },
             powerkey: () => addToProject("ppt", mainData as string[])
         }

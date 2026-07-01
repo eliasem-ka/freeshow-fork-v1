@@ -48,6 +48,7 @@ import {
     livePrepare,
     media,
     mediaFolders,
+    openedInteractionId,
     outLocked,
     outputs,
     overlayCategories,
@@ -226,7 +227,7 @@ const clickActions = {
         if (!id) return
         const data = obj.sel?.data?.[0] || {}
 
-        const renameById = ["show_drawer", "project", "folder", "stage", "theme", "style", "output", "tag", "profile"]
+        const renameById = ["show_drawer", "project", "folder", "stage", "theme", "style", "output", "tag", "profile", "interaction"]
         const renameByIdDirect = ["overlay", "template", "player", "layout", "effect"]
 
         if (renameById.includes(id)) activeRename.set(id + "_" + data.id)
@@ -319,6 +320,10 @@ const clickActions = {
             deleteAction({ id: "event", data: { id: obj.contextElem.id } })
             return
         }
+        if (obj.contextElem?.classList.value.includes("#interaction_input")) {
+            deleteAction({ id: "interaction_input", data: { index: Number(obj.contextElem.id?.slice(1)) } })
+            return
+        }
 
         // THIS MUST BE LAST (otherwise deleteing e.g. an event while the editbox is selected will delete that instead)
         // delete slide item using context menu, or menubar action
@@ -347,6 +352,8 @@ const clickActions = {
             history({ id: "UPDATE", newData: { id: "keys" }, oldData: { keys: eventIds }, location: { page: "drawer", id: "event" } })
         }
     },
+    delete_row: () => window.dispatchEvent(new CustomEvent("delete-row")),
+    delete_col: () => window.dispatchEvent(new CustomEvent("delete-col")),
     duplicate: (obj: ObjData) => {
         if (duplicate(obj.sel)) return
 
@@ -371,21 +378,24 @@ const clickActions = {
 
         // WIP history
         showsCache.update((a) => {
-            if (!a[showId]) return a
+            if (!a[showId]?.slides) return a
 
             const newId = uid()
             const newSlide = clone(a[showId].slides[groupId])
+            if (!newSlide) return a
             // delete newSlide.id // should not be there
 
             // group children
             let newChildren: string[] = []
             let newChildIds = new Map()
-            const children = newSlide.children || []
+            const children = Array.isArray(newSlide.children) ? newSlide.children : []
             children.forEach((childId) => {
                 const newChildId = uid()
-                a[showId].slides[newChildId] = clone(a[showId].slides[childId])
-                newChildren.push(newChildId)
-                newChildIds.set(childId, newChildId)
+                if (a[showId].slides[childId]) {
+                    a[showId].slides[newChildId] = clone(a[showId].slides[childId])
+                    newChildren.push(newChildId)
+                    newChildIds.set(childId, newChildId)
+                }
             })
 
             if (newChildren.length) newSlide.children = newChildren
@@ -393,16 +403,19 @@ const clickActions = {
 
             // layout
             const activeLayout = a[showId].settings?.activeLayout
-            a[showId].layouts[activeLayout].slides[groupIndex].id = newId
-            // children data
-            if (a[showId].layouts[activeLayout].slides[groupIndex].children) {
-                Object.keys(a[showId].layouts[activeLayout].slides[groupIndex].children).forEach((childId) => {
-                    const newChildId = newChildIds.get(childId)
-                    if (newChildId) {
-                        a[showId].layouts[activeLayout].slides[groupIndex].children![newChildId] = clone(a[showId].layouts[activeLayout].slides[groupIndex].children![childId])
-                        delete a[showId].layouts[activeLayout].slides[groupIndex].children![childId]
-                    }
-                })
+            const layoutSlide = a[showId].layouts?.[activeLayout || ""]?.slides?.[groupIndex]
+            if (layoutSlide) {
+                layoutSlide.id = newId
+                // children data
+                if (layoutSlide.children) {
+                    Object.keys(layoutSlide.children).forEach((childId) => {
+                        const newChildId = newChildIds.get(childId)
+                        if (newChildId) {
+                            layoutSlide.children![newChildId] = clone(layoutSlide.children![childId])
+                            delete layoutSlide.children![childId]
+                        }
+                    })
+                }
             }
 
             return a
@@ -1198,6 +1211,12 @@ const clickActions = {
             activePopup.set("timer")
         } else if (obj.sel.id === "variable") {
             activePopup.set("variable")
+        } else if (obj.sel.id === "interaction") {
+            openedInteractionId.set(obj.sel.data[0]?.id)
+        } else if (obj.contextElem?.classList?.contains("#interaction_input")) {
+            const id = (obj.contextElem.id || "").slice(1)
+            popupData.set({ id: get(openedInteractionId), inputIndex: Number(id) })
+            activePopup.set("interaction_input")
         } else if (obj.sel.id === "audio_stream") {
             activePopup.set("audio_stream")
         } else if (obj.contextElem?.classList?.contains("#project_template")) {
@@ -2117,8 +2136,6 @@ export async function format(id: string, obj: ObjData, data: any = null) {
 
     const editing = get(activeEdit)
     const items = editing.items || []
-
-    // WIP let slide = getEditSlide()
 
     if (editing.id) {
         let currentItems: Item[] = []

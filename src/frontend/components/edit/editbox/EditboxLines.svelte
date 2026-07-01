@@ -141,26 +141,13 @@
             let sel = getSelectionRange()
             if (!sel?.length || (sel.length === 1 && !Object.keys(sel[0]).length)) return
 
-            // WIP auto add • or - if on line and pressing Enter
-
             // if (sel.start === sel.end) {
             let lines: Line[] = getNewLines()
             let currentIndex = 0,
                 textPos = 0
             let start = -1
 
-            // TODO: auto bullets
-            if (!e.altKey) {
-                // console.log(lines, textPos, start, currentIndex, sel)
-                // let lastLine = lines[lines.length - 1]
-                // let lineText = lastLine.text?.[lastLine.text?.length - 1]?.value
-                // if (!lineText?.includes("\n") || !lineText?.includes("• ")) return
-                // lines[lines.length - 1].text[lastLine.text.length - 1].value += "• "
-
-                // updateLines(lines)
-
-                return
-            }
+            if (!e.altKey) return
 
             cutInTwo({ e, sel, lines: clone(lines), currentIndex, textPos, start })
         }
@@ -198,7 +185,7 @@
             const texts = (Array.isArray(firstLine?.text) ? firstLine.text : []).filter((a) => !a.customType).map((a) => a.value)
             showsCache.update((a) => {
                 const showId = ref.showId || $activeShow?.id || ""
-                const slide = a[showId]?.slides[ref.id]
+                const slide = a[showId]?.slides?.[ref.id]
                 if (!slide?.customDynamicValues?.scripture_text) return a
 
                 texts.forEach((t, i) => {
@@ -334,8 +321,9 @@
                             if (text.sourceDynamicKey?.includes("scripture_text")) {
                                 const key = text.sourceDynamicKey.split(":")[0]
                                 const index = text.sourceDynamicKey.split(":")[1] || "0"
-                                if (!a[ref.showId!].slides[ref.id].customDynamicValues![key]?.[index]?.[1]) return
-                                a[ref.showId!].slides[ref.id].customDynamicValues![key][index][1] = text.value
+                                const storage = a[ref.showId!]?.slides?.[ref.id]?.customDynamicValues
+                                if (!storage?.[key]?.[index]) return
+                                storage[key][index][1] = text.value
                             }
                         })
                     })
@@ -755,7 +743,6 @@
 <svelte:window on:keydown={keydown} />
 
 {#if item?.lines}
-    <!-- TODO: remove align..... -->
     <div bind:this={alignElem} class="align" class:chords={chordsMode} class:plain style={plain ? null : item.align || null}>
         {#if item.lines?.length < 2 && !getItemText(item).length}
             <span class="placeholder">
@@ -858,8 +845,8 @@
     }
 
     .edit :global(.break) {
-        /* balanced breaking, looks much cleaner */
-        text-wrap: balance;
+        text-wrap: balance; /* balanced breaking, looks much cleaner */
+        white-space: pre-wrap; /* preserve special spaces from Text edit */
     }
     .edit :global(.break.normalWrap) {
         text-wrap: unset;

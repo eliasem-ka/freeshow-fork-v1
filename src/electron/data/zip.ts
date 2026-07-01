@@ -1,9 +1,10 @@
 import fs from "fs"
+import path from "path"
 import yauzl from "yauzl"
 import yazl from "yazl"
 import { ToMain } from "../../types/IPC/ToMain"
 import { sendToMain } from "../IPC/main"
-import { getExtension } from "../utils/files"
+import { createFolder, getExtension } from "../utils/files"
 
 // https://www.npmjs.com/package/yazl (compression)
 // https://www.npmjs.com/package/yauzl (decompression)
@@ -132,10 +133,22 @@ export async function decompressZipStream(file: string, asBuffer = false, option
     })
 }
 
+// neutralise path-traversal/absolute segments so a crafted archive can't write outside the extraction directory (zip-slip)
+// legitimate nested names (e.g. "ppt/media/img.png") are left unchanged
+function sanitizeZipPath(name: string): string {
+    return name
+        .replace(/\\/g, "/")
+        .split("/")
+        .filter((segment) => segment && segment !== "." && segment !== "..")
+        .join("/")
+}
+
 function processEntry(entry: yauzl.Entry, zipfile: yauzl.ZipFile, data: { content: Buffer | string; name: string; extension: string }[], asBuffer: boolean, options: DecompressStreamOptions | undefined) {
     const name = entry.fileName
+    const safeName = sanitizeZipPath(name)
     const extension = getExtension(name)
-    const outputPath = options?.getOutputPath?.(name)
+    // pass the sanitized name to callers that build a destination path, so "../" entries can't escape the target folder
+    const outputPath = options?.getOutputPath?.(safeName)
 
     zipfile.openReadStream(entry, (err, readStream) => {
         if (err || !readStream) {
@@ -152,9 +165,9 @@ function processEntry(entry: yauzl.Entry, zipfile: yauzl.ZipFile, data: { conten
         }
 
         if (outputPath) {
-            streamToDisk(readStream, outputPath, name, extension, data, zipfile)
+            streamToDisk(readStream, outputPath, safeName, extension, data, zipfile)
         } else {
-            bufferInMemory(readStream, name, extension, asBuffer, data, zipfile)
+            bufferInMemory(readStream, safeName, extension, asBuffer, data, zipfile)
         }
     })
 }
@@ -165,6 +178,12 @@ function streamToDisk(readStream: NodeJS.ReadableStream, outputPath: string, nam
         if (hasAdvanced) return
         hasAdvanced = true
         zipfile.readEntry()
+    }
+
+    try {
+        createFolder(path.dirname(outputPath))
+    } catch (err) {
+        console.error("Failed to create parent directory for extraction:", outputPath, err)
     }
 
     const writeStream = fs.createWriteStream(outputPath)
@@ -226,7 +245,7 @@ export function getZipModifiedDates(filePath: string): Promise<{ [key: string]: 
             const modified: { [key: string]: Date } = {}
 
             zipfile.on("entry", (entry: yauzl.Entry) => {
-                modified[entry.fileName] = entry.getLastModDate()
+                modified[sanitizeZipPath(entry.fileName)] = entry.getLastModDate()
                 zipfile.readEntry()
             })
 

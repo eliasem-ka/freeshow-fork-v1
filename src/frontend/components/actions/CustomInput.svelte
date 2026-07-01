@@ -3,7 +3,7 @@
     import { Main } from "../../../types/IPC/Main"
     import { requestMain } from "../../IPC/main"
     import { cameraManager } from "../../media/cameraManager"
-    import { actions, activePopup, audioPlaylists, audioStreams, effects, effectsLibrary, groups, outputs, overlays, popupData, projects, shows, stageShows, styles, templates, timers, variables } from "../../stores"
+    import { actions, activePopup, audioPlaylists, audioStreams, effects, effectsLibrary, groups, interactions, outputs, overlays, popupData, projects, shows, stageShows, styles, templates, timers, variables } from "../../stores"
     import { translateText } from "../../utils/language"
     import { obsGetScenes } from "../../utils/obsTalk"
     import MetronomeInputs from "../drawer/audio/MetronomeInputs.svelte"
@@ -109,12 +109,13 @@
         change_output_style: () => convertToOptions($styles),
         id_start_timer: () => convertToOptions($timers),
         variable: () => convertToOptions($variables), // .map((a) => ({...a, type: $variables[a.id]?.type}))
-        // WIP remove all actions that reference this action and so on - to prevent infinite loop
-        run_action: () => convertToOptions($actions).filter((a) => a.label && a.value !== mainId),
+        // remove actions that is set to run this action to prevent loops
+        run_action: () => convertToOptions($actions).filter((a) => a.label && a.value !== mainId && $actions[a.value]?.actionValues?.run_action?.id !== mainId),
         set_template: () => convertToOptions($templates),
         toggle_output: () => convertToOptions($outputs),
         mute_output: () => sortByName(keysToID($outputs).filter((a) => !a.stageOutput)).map((a) => ({ value: a.id, label: a.name }), "label"),
         unmute_output: () => sortByName(keysToID($outputs).filter((a) => !a.stageOutput)).map((a) => ({ value: a.id, label: a.name }), "label"),
+        interactions: () => convertToOptions($interactions),
         start_webrtc_stream: () => [{ value: "", label: translateText("actions.all_outputs") }, ...sortByName(keysToID($outputs)).map((a) => ({ value: a.id, label: a.name }), "label")],
         stop_webrtc_stream: () => [{ value: "", label: translateText("actions.all_outputs") }, ...sortByName(keysToID($outputs)).map((a) => ({ value: a.id, label: a.name }), "label")]
     }
@@ -205,6 +206,8 @@
 {:else if inputId === "output_lock"}
     <MaterialDropdown label="stage.output" options={getOptions.output_lock()} value={value?.outputId || ""} on:change={(e) => updateValue("outputId", e.detail)} />
     <MaterialDropdown label="variables.value" options={stateOptions} value={typeof value?.value === "boolean" ? (value.value ? "on" : "off") : ""} on:change={textStateChange} />
+{:else if inputId === "interactions"}
+    <MaterialDropdown label="tabs.interactions" options={getOptions.interactions()} value={value?.id} on:change={(e) => updateValue("id", e.detail)} />
 {:else if inputId === "id"}
     {#if options.length || getOptions[actionId]}
         <MaterialDropdown label="variables.value" {options} value={value?.id} on:change={(e) => updateValue("id", e.detail)} />

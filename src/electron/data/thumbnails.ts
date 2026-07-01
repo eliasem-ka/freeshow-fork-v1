@@ -65,7 +65,6 @@ export async function getThumbnail(data: { input: string; size: number }) {
             // source file is newer than thumbnail, delete old thumbnail
             deleteFile(outputPath)
         } else {
-            currentlyGenerating.delete(mediaId)
             return finish(outputPath)
         }
     }
@@ -77,6 +76,9 @@ export async function getThumbnail(data: { input: string; size: number }) {
     return finish(outputPath)
 
     function finish(output: string) {
+        // release the lock if it's still held (cache hit, or generation that timed out without clearing it)
+        if (currentlyGenerating.has(mediaId)) currentlyGenerating.delete(mediaId)
+
         if (failedPaths.includes(mediaId)) {
             failedPaths.splice(failedPaths.indexOf(mediaId), 1) // allow retrying
             return { ...data, output: "" }
@@ -409,7 +411,7 @@ export function captureSlide(data: { output: { [key: string]: Output }; resoluti
                 if (window.isDestroyed()) return resolve(null)
 
                 window.webContents.send(OUTPUT, { channel: "OUTPUTS", data: data.output })
-                // WIP mute videos
+                window.webContents.setAudioMuted(true)
 
                 // wait for content load
                 setTimeout(async () => {

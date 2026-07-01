@@ -109,20 +109,15 @@
         else newStyles = {}
     }
 
-    // const CHANGE_POS_TIME = 2000
-    // let changePosTimeout = null
     let updateTimeout: NodeJS.Timeout | null = null
     function updateStyles() {
-        // || changePosTimeout
         if (!Object.keys(newStyles).length) return
 
-        // WIP nice to timeout here to reduce lag (but textbox position need to update!!)
-        // changePosTimeout = setTimeout(() => {
-        //     changePosTimeout = null
-        //     updateStyles()
-        // }, CHANGE_POS_TIME)
+        const slideIndex = $activeEdit.slide ?? 0
+        const slideId = ref[slideIndex]?.id
+        if (!slideId) return
 
-        let items = currentShow?.slides?.[ref[$activeEdit.slide || 0]?.id]?.items || []
+        let items = currentShow?.slides?.[slideId]?.items || []
         let values: string[] = []
         active.forEach((id) => {
             let item = items[id]
@@ -137,14 +132,11 @@
             }
         })
 
-        let slideId = ref[$activeEdit.slide || 0]?.id
-        if (!slideId) return
-
         let activeItems = [...active]
 
         let historyShow = $activeShow
         // focus mode
-        if (!historyShow && currentShowId) historyShow = { type: "show", id: currentShowId, index: $activeEdit.slide || 0 }
+        if (!historyShow && currentShowId) historyShow = { type: "show", id: currentShowId, index: slideIndex }
         else if (!historyShow) return
 
         history({
@@ -255,7 +247,7 @@
         // timeout to prevent number 2 from getting typed if changing with shortcuts
         setTimeout(() => {
             // set focus to textbox if only one
-            if (Slide?.items.length === 1 && !$activeEdit.items.length) {
+            if (Slide?.items?.length === 1 && !$activeEdit.items.length) {
                 activeEdit.update((a) => ({ ...(a || {}), items: [0] }))
                 const elem = document.querySelector(".editItem")?.querySelector(".edit")
                 if (elem && !$special.slideTimelineActive) {
@@ -311,8 +303,8 @@
     $: currentBackgroundPath = currentShow?.media?.[ref[$activeEdit.slide || 0]?.data.background || ""]?.path || ""
     $: hasBackground = !!currentBackgroundPath
     function convertBackgroundToMedia() {
-        // WIP add to back
-        addItem("media", null, { src: currentBackgroundPath }, "", { left: "0px", top: "0px", width: "1920px", height: "1080px" })
+        // add behind all other items
+        addItem("media", null, { src: currentBackgroundPath }, "", { left: "0px", top: "0px", width: "1920px", height: "1080px" }, 0)
 
         showsCache.update((a) => {
             if (!a[currentShowId]?.layouts?.[currentShow?.settings?.activeLayout || ""]?.slides?.[$activeEdit.slide || 0]?.background) return a
@@ -328,9 +320,9 @@
 
     function edit(e: any) {
         const slideId = ref[$activeEdit.slide!]?.id
-        if (Slide.notes === e.detail || !slideId) return
+        if (!Slide || Slide.notes === e.detail || !slideId) return
 
-        _show($activeShow!.id).slides([slideId]).set({ key: "notes", value: e.detail })
+        _show(currentShowId).slides([slideId]).set({ key: "notes", value: e.detail })
     }
 </script>
 

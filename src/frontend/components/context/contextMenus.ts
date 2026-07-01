@@ -44,6 +44,8 @@ export const contextMenuItems: { [key: string]: ContextMenuItem } = {
     delete: { label: "actions.delete", icon: "delete", iconColor: "#ff5454", shortcuts: ["Del"] },
     delete_remove: { label: "actions.remove", icon: "delete", iconColor: "#ff6b54", shortcuts: ["Del"] },
     delete_all: { label: "actions.delete_all", icon: "delete", iconColor: "#ff5454" },
+    delete_row: { label: "actions.delete_row", icon: "delete", iconColor: "#ff5454" },
+    delete_col: { label: "actions.delete_col", icon: "delete", iconColor: "#ff5454" },
     import: { label: "actions.import", icon: "import" },
     export: { label: "actions.export", icon: "export" },
     custom_text: { label: "popup.custom_text", icon: "rename", iconColor: "#6effbe" },
@@ -294,8 +296,8 @@ export const contextMenuLayouts: { [key: string]: string[] } = {
     template_card: ["GROUP_edit", "template_actions", "export", "SEPARATOR", "rename", "recolor", "duplicate", "delete"], // "GROUP_rename_color"
     template_card_default: ["GROUP_edit", "duplicate", "delete"],
     template_card_readonly: [],
-    effect_card: ["GROUP_edit", "display_duration", "SEPARATOR", "place_under_slide", "SEPARATOR", "rename", "recolor", "duplicate", "delete"], // "GROUP_rename_color"
-    effect_card_default: ["GROUP_edit", "duplicate", "delete"],
+    effect_card: ["GROUP_open", "display_duration", "SEPARATOR", "place_under_slide", "SEPARATOR", "rename", "recolor", "duplicate", "delete"], // "GROUP_rename_color"
+    effect_card_default: ["GROUP_open", "duplicate", "delete"],
     player: ["manage_player_tags", "player_tag_filter"],
     player_button: ["GROUP_open", "player_tag_set", "player_tag_filter", "SEPARATOR", "rename", "delete"],
     audio_button: ["GROUP_open", "effects_library_add", "favourite", "SEPARATOR", "system_open"],
@@ -311,6 +313,8 @@ export const contextMenuLayouts: { [key: string]: string[] } = {
     action_readonly: ["action_tag_filter"],
     scripture_verse: ["create_show", "SEPARATOR", "selectAll", "SEPARATOR", "route_bible"],
     scripture_chapter: ["create_show"],
+    interaction: ["GROUP_edit", "rename", "delete"],
+    interaction_input: ["GROUP_edit", "delete"],
 
     // PROJECT
     projects: ["newProject", "newFolder", "SEPARATOR", "sort_projects_by"],
@@ -389,6 +393,7 @@ export const contextMenuLayouts: { [key: string]: string[] } = {
     edit_box: ["GROUP_dynamic", "item_actions", "item_bind_to", "format", "rearrange", "transition", "SEPARATOR", "duplicate", "delete"], // "copy", "paste" (shortcut or top menubar) // "GROUP_duplicate_delete"
     editbox_text: ["text_copy", "text_cut", "text_paste", "text_select_all"],
     items_list_item: ["to_front", "forward", "backward", "to_back"],
+    table_context: ["delete_row", "delete_col"],
 
     // TIMELINE
     timeline_node: ["delete"],

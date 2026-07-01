@@ -16,11 +16,12 @@ import { send } from "../../utils/request"
 import { convertRSSToString, getRSS } from "../../utils/rss"
 import { runAction, slideHasAction } from "../actions/actions"
 import type { API_output_style } from "../actions/api"
+import { getInteraction } from "../drawer/pages/interactions"
 import { getCurrentTimerValue, getTimeUntilClock, playPauseGlobal } from "../drawer/timers/timers"
 import { getDynamicValue } from "../edit/scripts/itemHelpers"
 import { getTextLines } from "../edit/scripts/textStyle"
 import { clearBackground, clearOverlays, clearTimers } from "../output/clear"
-import { activeEdit, activeFocus, activePage, activeProject, activeShow, allOutputs, audioData, customMetadata, dictionary, dynamicValueData, focusMode, media, outLocked, outputDisplay, outputs, overlays, playingAudio, playingMetronome, projects, shows, showsCache, slideTimers, special, stageShows, styles, templates, timers, variables, videosData, videosTime } from "./../../stores"
+import { activeEdit, activeFocus, activeInteractions, activePage, activeProject, activeShow, allOutputs, audioData, cachedDynamicValues, customMetadata, dictionary, dynamicValueData, focusMode, interactions, media, outLocked, outputDisplay, outputs, overlays, playingAudio, playingMetronome, projects, shows, showsCache, slideTimers, special, stageShows, styles, templates, timers, variables, videosData, videosTime } from "./../../stores"
 import { clone, keysToID, sortByName } from "./array"
 import { downloadOnlineMedia, encodeFilePath, getExtension, getFileName, getMedia, getMediaStyle, getMediaType, removeExtension } from "./media"
 import { defaultLayers, getActiveOutputs, getAllNormalOutputs, getFirstActiveOutput, getFirstOutput, getWindowOutputId, isOutCleared, refreshOut, setOutput, startFolderTimer } from "./output"
@@ -108,14 +109,14 @@ export function swichProjectItem(pos: number, id: string) {
 
 export function getItemWithMostLines(slide: Slide | { items: Item[] }) {
     let amount = 0
-    slide.items?.forEach((item) => {
-        const lines: number = item?.lines?.filter((line) => line.text?.filter((text) => text.value !== undefined)?.length)?.length || 0
+    if (!Array.isArray(slide.items)) return 0
+    slide.items.forEach((item) => {
+        const lines: number = (Array.isArray(item?.lines) ? item.lines.filter((line) => Array.isArray(line.text) && line.text.filter((text) => text.value !== undefined).length > 0) : [])?.length || 0
         if (lines > amount) amount = lines
     })
     return amount
 }
 
-// TODO: multiple outputs with different lines!
 // get output with fewest lines
 export function getFewestOutputLines(updater = get(outputs)) {
     const outs = getActiveOutputs(updater, true, true, true)
@@ -165,9 +166,11 @@ function shouldTriggerBefore(action: any) {
     return action?.triggers?.find((trigger) => triggerActionsBeforeOutput[trigger]?.(action.actionValues?.[trigger]))
 }
 export function checkActionTrigger(layoutData: SlideData, slideIndex = 0) {
-    layoutData?.actions?.slideActions?.forEach((a) => {
-        if (shouldTriggerBefore(a)) runAction(a, { slideIndex })
-    })
+    if (Array.isArray(layoutData?.actions?.slideActions)) {
+        layoutData.actions.slideActions.forEach((a) => {
+            if (shouldTriggerBefore(a)) runAction(a, { slideIndex, source: "slide" })
+        })
+    }
 }
 
 export async function playPdf(data: OutSlide | null, next: boolean, loop = false) {
@@ -358,7 +361,7 @@ export function updateOut(showId: string, index: number, layout: LayoutRef[], ex
         }
 
         // audio
-        if (data.audio) {
+        if (Array.isArray(data.audio)) {
             // let clear action trigger first
             setTimeout(() => {
                 data.audio?.forEach((audio: string) => {
@@ -459,7 +462,7 @@ function playSlideActions(slideActions: SlideAction[], outputIds: string[] = [],
         // no need to "re-run" actions triggered right before output
         if (shouldTriggerBefore(a)) return
 
-        runAction(a, { slideIndex })
+        runAction(a, { slideIndex, source: "slide" })
     })
 
     playOutputStyleTemplateActions(outputIds)
@@ -474,10 +477,10 @@ function playOutputStyleTemplateActions(outputIds: string[]) {
         const styleTemplateId = get(styles)[outputStyleId]?.template || ""
         if (!styleTemplateId) return
 
-        const templateSettings = get(templates)[styleTemplateId]?.settings?.actions || []
-        if (!templateSettings?.length) return
+        const templateSettings = get(templates)[styleTemplateId]?.settings?.actions
+        if (!Array.isArray(templateSettings) || !templateSettings.length) return
 
-        templateSettings?.forEach((action) => runAction(action))
+        templateSettings.forEach((action) => runAction(action, { source: "slide" }))
     })
 }
 
@@ -858,6 +861,18 @@ export function replaceDynamicValues(text: string, { showId, layoutId, slideInde
     }
 
     function getDynamicValueText(dynamicId: string, show: Show | null): string | string[] {
+        // request from frontend
+        if (isOutputWin && dynamicId.startsWith("interaction_")) {
+            const matches = [...text.matchAll(createRegex(dynamicId))]
+            if (matches.length === 0) return requestDynamicValue(dynamicId)
+            const results: string[] = []
+            matches.forEach(([_, num]) => {
+                const idx = num ? parseInt(num, 10) : 0
+                results[idx] = requestDynamicValue(num ? `${dynamicId}#${num}` : dynamicId) as string
+            })
+            return results
+        }
+
         // VARIABLE
         if (dynamicId.startsWith("variable_set_") || dynamicId.startsWith("$") || dynamicId.startsWith("variable_")) {
             return getVariableValue(dynamicId, { showId, layoutId, slideIndex, type, id: dynamicId })
@@ -871,7 +886,7 @@ export function replaceDynamicValues(text: string, { showId, layoutId, slideInde
             if (!timer) return min || sec ? "00" : "00:00"
 
             const today = new Date()
-            const currentTime = getCurrentTimerValue(timer, { id: timer.id }, today)
+            const currentTime = Math.floor(getCurrentTimerValue(timer, { id: timer.id }, today))
 
             const overflow = !!timer.overflow
             const isOverflowing = getTimerOverflow()
@@ -1006,6 +1021,11 @@ export function replaceDynamicValues(text: string, { showId, layoutId, slideInde
     }
 }
 
+function requestDynamicValue(id: string) {
+    send(OUTPUT, ["MAIN_REQUEST_DYNAMIC_VALUE"], { dynamicId: id })
+    return get(cachedDynamicValues)[id] || ""
+}
+
 const dynamicValues = {
     // time
     time_date: () => addZero(new Date().getDate()),
@@ -1048,10 +1068,20 @@ const dynamicValues = {
         const group = show?.slides?.[ref[parentIndex]?.id]?.group || ""
         return getGroupName({ show, showId: outSlide?.id }, ref[parentIndex]?.id, group, parentIndex, false, false)
     },
+    slide_group_color: ({ show, ref, slideIndex }) => {
+        const parentIndex = ref[slideIndex]?.parent?.layoutIndex ?? slideIndex
+        const groupColor = show?.slides?.[ref[parentIndex]?.id]?.color || ""
+        return groupColor
+    },
     slide_group_next: ({ show, ref, slideIndex, outSlide }) => {
         const parentIndex = ref[slideIndex + 1]?.parent?.layoutIndex ?? slideIndex + 1
         const group = show?.slides?.[ref[parentIndex]?.id]?.group || ""
         return getGroupName({ show, showId: outSlide?.id }, ref[parentIndex]?.id, group, parentIndex, false, false)
+    },
+    slide_group_next_color: ({ show, ref, slideIndex }) => {
+        const parentIndex = ref[slideIndex + 1]?.parent?.layoutIndex ?? slideIndex + 1
+        const groupColor = show?.slides?.[ref[parentIndex]?.id]?.color || ""
+        return groupColor
     },
     slide_group_upcoming: ({ show, ref, slideIndex, outSlide }) => {
         if (slideIndex < 0) return ""
@@ -1059,6 +1089,13 @@ const dynamicValues = {
         while (ref[nextParentIndex]?.type !== "parent" && nextParentIndex < ref.length) nextParentIndex++
         const group = show?.slides?.[ref[nextParentIndex]?.id]?.group || ""
         return getGroupName({ show, showId: outSlide?.id }, ref[nextParentIndex]?.id, group, nextParentIndex, false, false)
+    },
+    slide_group_upcoming_color: ({ show, ref, slideIndex }) => {
+        if (slideIndex < 0) return ""
+        let nextParentIndex = slideIndex + 1
+        while (ref[nextParentIndex]?.type !== "parent" && nextParentIndex < ref.length) nextParentIndex++
+        const groupColor = show?.slides?.[ref[nextParentIndex]?.id]?.color || ""
+        return groupColor
     },
     slide_notes: ({ show, ref, slideIndex }) => show?.slides?.[ref[slideIndex]?.id]?.notes || "",
     slide_notes_next: ({ show, ref, slideIndex }) => show?.slides?.[ref[slideIndex + 1]?.id]?.notes || "",
@@ -1105,7 +1142,19 @@ const dynamicValues = {
     audio_time: ({ audioTime }) => joinTime(secondsToTime(audioTime)),
     audio_countdown: ({ audioTime, audioDuration }) => joinTime(secondsToTime(audioDuration > 0 ? audioDuration - audioTime : 0)),
     audio_duration: ({ audioDuration }) => joinTime(secondsToTime(audioDuration)),
-    audio_volume: () => AudioPlayer.getVolume() * 100
+    audio_volume: () => Math.round(AudioPlayer.getVolume() * 100),
+
+    // interaction
+    interaction_players: ({ show }) => getInteractionPlayers(show),
+    interaction_players_count: ({ show }) => getInteractionPlayersCount(show),
+    interaction_question: ({ show }) => getInteractionQuestion(show),
+    interaction_input_options: ({ show }) => getInteractionInputOptions(show),
+    interaction_option_percentages: ({ show }) => getInteractionOptionPercentages(show),
+    interaction_time: ({ show }) => getInteractionTime(show),
+    interaction_answer: ({ show }) => getInteractionAnswer(show),
+    interaction_player_answers: ({ show }) => getInteractionPlayerAnswers(show),
+    interaction_player_answer_latest: ({ show }) => getInteractionPlayerAnswerLatest(show),
+    interaction_leaderboard: ({ show }) => getInteractionLeaderboard(show)
 }
 
 // placeholder values
@@ -1152,9 +1201,17 @@ export function getVariableNameId(name: string) {
     return name.toLowerCase().trim().replaceAll(" ", "_")
 }
 
-export function getNumberVariables(variableUpdater = get(variables), _dynamicUpdaters: any = null) {
+export function createCSSVariables(variableUpdater = get(variables), _dynamicUpdaters: any = null, type: "default" | "stage" = "default", _updateTrigger: any = null) {
+    // add all number variables
     const numberVariables = Object.values(variableUpdater || {}).filter((a) => a && (a.type === "number" || a.type === "random_number" || (a.type === "text" && a.text?.includes("{"))))
-    return numberVariables.reduce((css, v) => (css += `--variable-${getVariableNameId(v.name)}: ${v.type === "text" ? getDynamicValue(v.text || "") : (v.number ?? (v.default || 0))};`), "")
+    let css = numberVariables.reduce((css, v) => (css += `--variable-${getVariableNameId(v.name)}: ${v.type === "text" ? getDynamicValue(v.text || "", type) : (v.number ?? (v.default || 0))};`), "")
+
+    // add color dynamic values
+    css += `--slide-group-color: ${getDynamicValue("slide_group_color", type)};`
+    css += `--slide-group-next-color: ${getDynamicValue("slide_group_next_color", type)};`
+    css += `--slide-group-upcoming-color: ${getDynamicValue("slide_group_upcoming_color", type)};`
+
+    return css
 }
 
 // PROJECT SECTION DATA
@@ -1240,4 +1297,139 @@ function getMetadata(audioPath: string) {
 function getArtist(metadata: ICommonTagsResult) {
     const artists = [metadata.originalartist, metadata.artist, metadata.albumartist, ...(metadata.artists || [])].filter(Boolean)
     return [...new Set(artists)].join(", ")
+}
+
+// INTERACTION
+
+function getInteractionId(show: Show | null): string | null {
+    if (!show) return null
+
+    let interactionId = show?.reference?.data?.id
+
+    // get any active ones
+    if (!interactionId) interactionId = get(activeInteractions)[0]
+
+    return interactionId || null
+}
+
+function _getInteraction(show: Show | null) {
+    const interactionId = getInteractionId(show)
+    if (!interactionId) return null
+
+    return getInteraction(interactionId) || null
+}
+
+function getInteractionPlayers(show: Show | null) {
+    const interaction = _getInteraction(show)
+    if (!interaction) return ""
+
+    return interaction
+        .getClients()
+        .map((p) => p.name)
+        .join(", ")
+}
+
+function getInteractionPlayersCount(show: Show | null) {
+    const interaction = _getInteraction(show)
+    if (!interaction) return ""
+
+    return String(interaction.getClientsCount())
+}
+
+function getInteractionQuestion(show: Show | null) {
+    const interaction = _getInteraction(show)
+    if (!interaction) return ""
+
+    const questions = interaction.getQuestion()
+    return [questions.join("<br>"), ...questions]
+}
+
+function getInteractionInputOptions(show: Show | null) {
+    const interaction = _getInteraction(show)
+    if (!interaction) return ""
+
+    const options = interaction.getInputOptions()
+    return [options.join("<br>"), ...options]
+}
+
+function getInteractionTime(show: Show | null) {
+    const interaction = _getInteraction(show)
+    if (!interaction) return ""
+
+    return interaction.getTime()
+}
+
+function getInteractionAnswer(show: Show | null) {
+    const interaction = _getInteraction(show)
+    if (!interaction) return ""
+
+    return interaction.getAnswer()
+}
+
+function getInteractionPlayerAnswers(show: Show | null) {
+    const interaction = _getInteraction(show)
+    if (!interaction) return ""
+
+    const answers = interaction.getPlayerAnswers()
+    return [answers.join(", "), ...answers]
+}
+
+function getInteractionPlayerAnswerLatest(show: Show | null) {
+    const interaction = _getInteraction(show)
+    if (!interaction) return ""
+
+    return interaction.getPlayerAnswerLatest()
+}
+
+function getInteractionLeaderboard(show: Show | null) {
+    const interaction = _getInteraction(show)
+    if (interaction) {
+        const leaderboard = interaction.getLeaderboard()
+        return [leaderboard.join("<br>"), ...leaderboard]
+    }
+
+    // fallback to previous leaderboard when closed
+    const interactionId = getInteractionId(show)
+    const savedInteraction = interactionId ? get(interactions)[interactionId] : null
+    const lastHistory = savedInteraction?.history?.at(-1)
+    if (lastHistory?.leaderboard) {
+        const leaderboard = lastHistory.leaderboard.map((c: any) => `${c.name}: ${c.score}`)
+        return [leaderboard.join("<br>"), ...leaderboard]
+    }
+
+    return ""
+}
+
+function getInteractionOptionPercentages(show: Show | null) {
+    const interaction = _getInteraction(show)
+    if (interaction) {
+        const percentages = interaction.getOptionPercentages()
+        return percentages.length > 0 ? percentages : ""
+    }
+
+    // fallback to previous option percentages when closed
+    const interactionId = getInteractionId(show)
+    const savedInteraction = interactionId ? get(interactions)[interactionId] : null
+    const lastHistory = savedInteraction?.history?.at(-1)
+    if (lastHistory?.inputs && savedInteraction?.inputs) {
+        const inputIndex = lastHistory.inputs.length - 1
+        const input = savedInteraction.inputs[inputIndex]
+        const historyInput = lastHistory.inputs[inputIndex]
+        if (input && input.type === "multi_choice" && input.options && historyInput?.answers) {
+            const totalAnswers = historyInput.answers.length
+            const percentages = input.options.map((o: any) => {
+                if (totalAnswers === 0) return "0%"
+                const chosenCount = historyInput.answers.filter((ans: any) => {
+                    if (!ans || ans.value === undefined) return false
+                    const clientValues = Array.isArray(ans.value) ? ans.value : [ans.value]
+                    return clientValues.includes(o.value)
+                }).length
+                const percent = Math.round((chosenCount / totalAnswers) * 100)
+                return `${percent}%`
+            })
+            return [percentages.join("<br>"), ...percentages]
+        }
+    }
+
+    return ""
 }

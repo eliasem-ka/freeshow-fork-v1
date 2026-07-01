@@ -51,6 +51,7 @@
         "start_audio_stream",
         "start_playlist",
         "start_metronome",
+        "id_start_timer",
         "start_slide_timers",
         "stop_timers",
         "change_output_style",
@@ -102,7 +103,6 @@
                 // remove any Spotify ones if not active
                 if (id.startsWith("spotify_") && !spotifyEnabled) return false
 
-                // WIP MIDI multiple of the same (needs a new way of setting the id)
                 // show if it has an input (because you probably want to have multiple)
                 // if (actionData[actionId]?.input) return true
                 // remove already added or custom ones

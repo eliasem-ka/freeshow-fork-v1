@@ -4,6 +4,7 @@ import type { Stats } from "fs"
 import type { Bible } from "json-bible/lib/Bible"
 import type { SyncProviderId } from "../../electron/cloud/syncManager"
 import type { ContentFile, ContentLibraryCategory, ContentProviderId, MediaLicense } from "../../electron/contentProviders/base/types"
+import type { PCOFolderTreeNode } from "../../electron/contentProviders/planningCenter/request"
 import type { _store } from "../../electron/data/store"
 import type { TimecodeMode } from "../../electron/timecode/timecode"
 import type { ErrorLog, FileFolder, LessonsData, LyricSearchResult, MainFilePaths, Media, OS, SpotifyState, Subtitle } from "../Main"
@@ -150,6 +151,11 @@ export enum Main {
     PROVIDER_LOAD_SERVICES = "PROVIDER_LOAD_SERVICES",
     PROVIDER_DISCONNECT = "PROVIDER_DISCONNECT",
     PROVIDER_STARTUP_LOAD = "PROVIDER_STARTUP_LOAD",
+    PROVIDER_FETCH_FOLDERS = "PROVIDER_FETCH_FOLDERS",
+    PCO_LIVE_GET = "PCO_LIVE_GET",
+    PCO_PUSHER_AUTH = "PCO_PUSHER_AUTH",
+    PCO_FETCH_SERVICE_TREE = "PCO_FETCH_SERVICE_TREE",
+    PCO_LOAD_PLAN = "PCO_LOAD_PLAN",
     // Content Library
     GET_CONTENT_PROVIDERS = "GET_CONTENT_PROVIDERS",
     GET_CONTENT_LIBRARY = "GET_CONTENT_LIBRARY",
@@ -225,7 +231,7 @@ export interface MainSendPayloads {
     [Main.LOCATE_MEDIA_FILE]: { filePath: string; folders: string[] }
     [Main.SET_MEDIA_FOLDER_PATH]: string
     [Main.GET_SIMILAR]: { paths: string[] }
-    [Main.BUNDLE_MEDIA_FILES]: { openFolder?: boolean }
+    [Main.BUNDLE_MEDIA_FILES]: { openFolder?: boolean; outputPath?: string }
     [Main.MEDIA_FOLDER_COPY]: { paths: string[] }
     [Main.FILE_INFO]: string
     [Main.READ_FOLDER]: { path: string | string[]; depth?: number; generateThumbnails?: boolean; captureFolderContent?: boolean }
@@ -245,6 +251,11 @@ export interface MainSendPayloads {
     [Main.PROVIDER_LOAD_SERVICES]: { providerId: ContentProviderId; cloudOnly?: boolean; data?: any }
     [Main.PROVIDER_DISCONNECT]: { providerId: ContentProviderId; scope?: string }
     [Main.PROVIDER_STARTUP_LOAD]: { providerId: ContentProviderId; scope?: string; data?: any; cloudOnly?: boolean }
+    [Main.PROVIDER_FETCH_FOLDERS]: { providerId: ContentProviderId }
+    [Main.PCO_LIVE_GET]: { serviceTypeId: string; planId: string }
+    [Main.PCO_PUSHER_AUTH]: { socketId: string; channelName: string; serviceTypeId: string }
+    [Main.PCO_FETCH_SERVICE_TREE]: undefined
+    [Main.PCO_LOAD_PLAN]: { serviceTypeId: string; planId: string }
     // Content Library
     [Main.GET_CONTENT_LIBRARY]: { providerId: ContentProviderId }
     [Main.GET_PROVIDER_CONTENT]: { providerId: ContentProviderId; key: string }
@@ -307,7 +318,7 @@ export interface MainReturnPayloads {
     [Main.DOES_MEDIA_EXIST]: Promise<{ path: string; exists: boolean; creationTime?: number }>
     [Main.GET_THUMBNAIL]: Promise<{ output: string; input: string; size: number }>
     // [Main.PDF_TO_IMAGE]: Promise<string[]>
-    [Main.READ_EXIF]: Promise<{ id: string; exif: ExifData }>
+    [Main.READ_EXIF]: Promise<{ id: string; exif: ExifData | undefined }>
     [Main.MEDIA_CODEC]: Promise<{ path: string; codecs: string[]; mimeType: string; mimeCodec: string }>
     [Main.MEDIA_TRACKS]: Promise<{ path: string; tracks: Subtitle[] }>
     [Main.MEDIA_IS_DOWNLOADED]: Promise<{ path: string; buffer: Buffer | null; protectedUrl?: string | null; isDownloading?: boolean } | null>
@@ -338,6 +349,10 @@ export interface MainReturnPayloads {
     [Main.SEND_SOCKET_MESSAGE]: Promise<boolean>
     // Provider-based routing
     [Main.PROVIDER_DISCONNECT]: { success: boolean }
+    [Main.PROVIDER_FETCH_FOLDERS]: Promise<PCOFolderTreeNode[]>
+    [Main.PCO_FETCH_SERVICE_TREE]: Promise<PCOFolderTreeNode[]>
+    [Main.PCO_LIVE_GET]: Promise<{ liveId: string | null; liveChannel: string | null; orgId: string | null; liveStartAt: string | null; liveEndAt: string | null; length: number | null; isPreService: boolean; serviceStartAt: string | null; serviceEndAt: string | null } | null>
+    [Main.PCO_PUSHER_AUTH]: Promise<{ auth: string; channel_data?: string } | null>
     // Content Library
     [Main.GET_CONTENT_PROVIDERS]: { providerId: ContentProviderId; displayName: string; hasContentLibrary: boolean }[]
     [Main.GET_CONTENT_LIBRARY]: Promise<ContentLibraryCategory[]>

@@ -7,7 +7,7 @@
     import { history } from "../../helpers/history"
     import { getExtension, getFileName, getMediaType } from "../../helpers/media"
     import { getFirstActiveOutput, getOutputResolution, percentageStylePos } from "../../helpers/output"
-    import { getNumberVariables } from "../../helpers/showActions"
+    import { createCSSVariables } from "../../helpers/showActions"
     import MaterialButton from "../../inputs/MaterialButton.svelte"
     import SlideItems from "../../slide/SlideItems.svelte"
     import EditboxCropping from "./EditboxCropping.svelte"
@@ -38,7 +38,12 @@
     export let mouse: any = {}
     function mousedown(e: any) {
         if (e.target.closest(".chords") || e.target.closest(".editTools")) return
-        if (!e.target.closest(".line") && !e.target.closest(".square") && !e.target.closest(".rotate") && !e.target.closest(".radius") && !e.target.closest(".cropHandle") && !e.target.closest(".cropOverlay")) openToolsTab.set("text")
+        if (!e.target.closest(".line") && !e.target.closest(".square") && !e.target.closest(".rotate") && !e.target.closest(".radius") && !e.target.closest(".cropHandle") && !e.target.closest(".cropOverlay")) {
+            openToolsTab.set("text")
+
+            // Table shouldn't be draggable from the center
+            if (item?.type === "table") return
+        }
 
         const rightClick: boolean = e.button === 2 || e.buttons === 2 || ($os.platform === "darwin" && e.ctrlKey)
 
@@ -141,21 +146,33 @@
             style = percentageStylePos(style, outputResolution)
         }
 
+        // minimum of 50% opacity on all items in the editor
+        if (style.includes("opacity:")) {
+            style = style.replace(/opacity:\s*([0-9.]+)/, (match, p1) => {
+                if (parseFloat(p1) < 0.5) return "opacity: 0.5"
+                return match
+            })
+        }
+
         return style
     }
 
     // check if media fills entire slide, if it does it might be intended as a background
-    $: if (item?.type === "media") checkMedia()
-    else mediaShouldBeBackground = false
     let mediaShouldBeBackground = false
+    $: if (item?.type === "media" && checkMedia()) mediaShouldBeBackground = true
+    else mediaShouldBeBackground = false
     function checkMedia() {
-        // WIP return if background exists
-        if (!item?.src || (ref?.type || "show") !== "show" || !item.style?.includes("width:1920") || !item.style?.includes("height:1080")) {
-            mediaShouldBeBackground = false
-            return
-        }
+        if (!item?.src) return false
+        if ((ref?.type || "show") !== "show") return false
 
-        mediaShouldBeBackground = true
+        // item fills entire width and height
+        if (!item.style?.includes("width:1920") || !item.style?.includes("height:1080")) return false
+
+        const currentLayoutSlide = $showsCache[active || ""]?.layouts?.[layout]?.slides?.[$activeEdit.slide ?? -1]
+        // background is already set
+        if (currentLayoutSlide?.background) return false
+
+        return true
     }
     function convertToBackground() {
         if (!item?.src) return
@@ -179,8 +196,8 @@
     $: currentSlide = (ref.type || "show") === "show" ? $showsCache[active || ""]?.slides?.[ref.id] : null // WIP get group slide
     $: isLocked = (ref.type || "show") !== "show" ? false : $showsCache[active || ""]?.locked || currentSlide?.locked || profile.global === "read" || profile[$showsCache[active || ""]?.category || ""] === "read"
 
-    // give CSS access to number variable values
-    $: cssVariables = getNumberVariables($variables)
+    // give CSS access to certain dynamic values
+    $: cssVariables = createCSSVariables($variables)
 
     const isOptimized = $special.optimizedMode
     let previewCropType: "clip" | "ppt" = "clip"
@@ -196,10 +213,6 @@
 <!-- on:mouseup={() => chordUp({ showRef: ref, itemIndex: index, item })} -->
 <svelte:window on:mousedown={deselect} on:keydown={keydown} />
 
-<!-- WIP item with opacity 0 is completely hidden! Even the align elements! -->
-
-<!-- bind:offsetHeight={height}
-bind:offsetWidth={width} -->
 <div
     bind:this={itemElem}
     class={plain ? "editItem" : `editItem item ${isLocked ? "" : "context #edit_box"}`}
@@ -208,6 +221,7 @@ bind:offsetWidth={width} -->
     class:isDisabledVariable
     class:chords={chordsMode}
     class:isOptimized
+    class:showOverflow={item?.type === "table" || cropActive}
     style="{plain ? 'width: 100%;' : `${getCustomStyle(item?.style || '', customOutputId)}; outline: ${3 / ratio}px solid rgb(255 255 255 / 0.2);z-index: ${index + 1 + ($activeEdit.items.includes(index) ? 100 : 0)};${filter ? 'filter: ' + filter + ';' : ''}${backdropFilter ? 'backdrop-filter: ' + backdropFilter + ';' : ''}`}{cssVariables}{fixedWidth}"
     data-index={index}
     on:mousedown={mousedown}
@@ -223,6 +237,8 @@ bind:offsetWidth={width} -->
             <div class="mediaFrame" class:showOverflow={cropActive}>
                 <SlideItems item={previewItem} {ratio} {ref} {itemElem} slideIndex={$activeEdit.slide || 0} edit cropPreviewMode={cropActive} />
             </div>
+        {:else if previewItem.type === "table"}
+            <SlideItems item={previewItem} {ratio} {ref} {itemElem} slideIndex={$activeEdit.slide || 0} {index} edit />
         {:else}
             <SlideItems item={previewItem} {ratio} {ref} {itemElem} slideIndex={$activeEdit.slide || 0} edit />
         {/if}
@@ -250,6 +266,9 @@ bind:offsetWidth={width} -->
     }
     .item.selected {
         overflow: visible;
+    }
+    .item.showOverflow {
+        overflow: visible !important;
     }
     .item.selected :global(.align) {
         outline: 5px solid var(--secondary-opacity);
@@ -298,6 +317,7 @@ bind:offsetWidth={width} -->
         text-shadow: none;
 
         /* if parent is flipped, this will apply the same flip, so it's flipped back */
+        /* WIP rotate means this also rotates on top */
         transform: inherit;
     }
 </style>

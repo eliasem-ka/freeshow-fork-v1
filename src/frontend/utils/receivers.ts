@@ -3,8 +3,10 @@ import { CLOUD, CONTROLLER, NDI, OUTPUT, OUTPUT_STREAM, REMOTE, STAGE } from "..
 import type { ClientMessage } from "../../types/Socket"
 import { AudioAnalyser } from "../audio/audioAnalyser"
 import { AudioAnalyserMerger } from "../audio/audioAnalyserMerger"
+import { AudioMicrophone } from "../audio/audioMicrophone"
 import { setEqualizerEnabled, updateEqualizerBands } from "../audio/effects/audioEqualizer"
 import { runAction } from "../components/actions/actions"
+import { getDynamicValue } from "../components/edit/scripts/itemHelpers"
 import { clone } from "../components/helpers/array"
 import { checkNextAfterMedia } from "../components/helpers/showActions"
 import { clearBackground } from "../components/output/clear"
@@ -17,9 +19,11 @@ import {
     activeTimers,
     alertMessage,
     allOutputs,
+    audioChannels,
     audioChannelsData,
     audioData,
     audioEffects,
+    cachedDynamicValues,
     categories,
     closeAd,
     colorbars,
@@ -136,7 +140,7 @@ const receiveOUTPUTasMAIN: any = {
             return a
         })
     },
-    ACTION_MAIN: (a: { id: string }) => runAction(get(actions)[a.id]),
+    ACTION_MAIN: (a: { id: string }) => runAction(get(actions)[a.id], { source: "remote" }),
     AUDIO_MAIN: (data: any) => {
         if (!data.id) return
 
@@ -236,6 +240,24 @@ const receiveOUTPUTasMAIN: any = {
             a[data.id][data.path] = data.data
             return a
         })
+    },
+
+    MAIN_REQUEST_DYNAMIC_VALUE: (data: { dynamicId: string }) => {
+        if (!data?.dynamicId) return
+        send(OUTPUT, ["REQUEST_DYNAMIC_VALUE"], { dynamicId: data.dynamicId, value: getDynamicValue(data.dynamicId) })
+    },
+    MAIN_REQUEST_VOLUME: (data: { deviceId: string }) => {
+        if (!data?.deviceId) return
+        let value = -80
+        if (data.deviceId === "main") {
+            const channels = get(audioChannels)
+            const db = channels.length ? Math.max(...channels.map(c => c.dB?.value ?? -80)) : -80
+            value = Math.round(db)
+        } else {
+            AudioMicrophone.startListening(data.deviceId)
+            value = AudioMicrophone.getVolume(data.deviceId)
+        }
+        send(OUTPUT, ["REQUEST_VOLUME"], { deviceId: data.deviceId, value })
     }
 }
 
@@ -347,6 +369,15 @@ export const receiveOUTPUTasOUTPUT: any = {
     PLAYING_AUDIO: (a: any) => playingAudioPaths.set(a),
     AUDIO_DATA: (a: any) => audioData.set(a),
     DYNAMIC_VALUE_DATA: (a: any) => dynamicValueData.set(a),
+    REQUEST_DYNAMIC_VALUE: (data: { dynamicId: string; value: string }) => {
+        cachedDynamicValues.update((a) => {
+            a[data.dynamicId] = data.value
+            return a
+        })
+    },
+    REQUEST_VOLUME: (data: { deviceId: string; value: number }) => {
+        AudioMicrophone.volumes[data.deviceId] = data.value
+    },
 
     COLORBARS: (a: any) => colorbars.set(a),
     LIVE_PREPARE: (a: any) => livePrepare.set(a)

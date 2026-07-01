@@ -29,8 +29,10 @@ import {
     events,
     focusedArea,
     folders,
+    interactions,
     media,
     mediaFolders,
+    openedInteractionId,
     outputs,
     overlayCategories,
     overlays,
@@ -588,18 +590,8 @@ const pasteActions = {
 
         // WIP update media id if already existing
 
-        // data.slides.reverse()
-        // if (data.layouts) data.layouts.reverse()
-
         // get all slide ids & child ids
         const copiedIds: string[] = data.slides.map((a) => a.id)
-        // let childs = []
-        // data.forEach((slide) => {
-        //   copiedIds.push(slide.id)
-        //   if (slide.children?.length) childs.push(...slide.children)
-        // })
-
-        // TODO: duplicate each individual slide as their own
 
         // let slides = clone(_show().get().slides)
         // let ref = getLayoutRef()
@@ -665,7 +657,6 @@ const pasteActions = {
 
             layouts[slideIndex] = layout
         })
-        // TODO: children next to each other should be grouped
 
         // TODO: undo/redo this is buggy
 
@@ -900,6 +891,25 @@ const deleteActions = {
             data.forEach(({ id }) => {
                 delete a[id]
             })
+
+            return a
+        })
+    },
+    interaction: (data: any) => {
+        // WIP history
+        interactions.update((a) => {
+            data.forEach(({ id }) => {
+                delete a[id]
+            })
+            return a
+        })
+    },
+    interaction_input: (data: any) => {
+        const id = get(openedInteractionId)
+        interactions.update((a) => {
+            if (!a[id]?.inputs) return a
+
+            a[id].inputs.splice(data.index, 1)
 
             return a
         })

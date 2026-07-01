@@ -310,11 +310,11 @@ export function selectFolderDialog(title = "", defaultPath = ""): string {
 
 // DATA FOLDERS
 
-export function openInSystem(filePath: string, openFolder = false) {
+export async function openInSystem(filePath: string, openFolder = false) {
     if (!doesPathExist(filePath)) return sendToMain(ToMain.ALERT, "This does not exist!")
 
-    if (openFolder) shell.openPath(filePath).catch((err) => console.error("Could not open system folder: " + String(err)))
-    else shell.showItemInFolder(filePath)
+    const err = openFolder ? await shell.openPath(filePath).catch(() => "error") : ""
+    if (!openFolder || err) shell.showItemInFolder(filePath)
 }
 
 export const dataFolderNames = {
@@ -459,19 +459,33 @@ export async function readFolderContent(data: { path: string | string[]; depth?:
 
     async function getFolderContentRecursive(folderPath: string, currentDepth = 0) {
         const exceededDepth = currentDepth > data.depth!
-        if ((data.captureFolderContent && currentDepth < 2 ? false : exceededDepth) || folderContent.has(folderPath)) {
-            let filePaths: string[] = []
-            if (currentDepth === 1) {
-                const fileList = await readFolderAsync(folderPath)
-                filePaths = fileList.map((name) => path.join(folderPath, name))
-            }
 
-            folderContent.set(folderPath, { isFolder: true, path: folderPath, name: path.basename(folderPath), files: filePaths })
+        if (folderContent.has(folderPath)) return
+
+        if (data.captureFolderContent && currentDepth >= 2 && exceededDepth) {
+            folderContent.set(folderPath, { isFolder: true, path: folderPath, name: path.basename(folderPath), files: [] })
             return
         }
 
         const fileList = await readFolderAsync(folderPath)
         const filePaths: string[] = fileList.map((name) => path.join(folderPath, name))
+
+        let noMedia = false
+        if (data.captureFolderContent) {
+            // check if any of the files in the current folder are media files and no folders (because they might contain media files)
+            const results = await Promise.all(
+                filePaths.map(async (p) => {
+                    const stats = await getFileStatsAsync(p)
+                    return stats?.isDirectory() || isMedia(getExtension(p))
+                })
+            )
+            noMedia = !results.some((res) => res)
+        }
+
+        if (data.captureFolderContent && currentDepth < 2 ? false : exceededDepth) {
+            folderContent.set(folderPath, { isFolder: true, path: folderPath, name: path.basename(folderPath), files: filePaths, noMedia: noMedia ? true : undefined })
+            return
+        }
 
         const captureThumbnailPaths = data.captureFolderContent && currentDepth === 1 ? getFirstMediaFiles(filePaths, 4) : []
         const currentPaths = data.captureFolderContent && exceededDepth ? captureThumbnailPaths : filePaths
@@ -485,7 +499,7 @@ export async function readFolderContent(data: { path: string | string[]; depth?:
                     await getFolderContentRecursive(filePath, currentDepth + 1)
                 } else {
                     let thumbnailPath = ""
-                    if (captureThumbnailPaths.includes(filePath) || (data.generateThumbnails && currentDepth === 0 && isMedia(path.extname(filePath).substring(1)))) {
+                    if (captureThumbnailPaths.includes(filePath) || (data.generateThumbnails && currentDepth === 0 && isMedia(getExtension(filePath)))) {
                         try {
                             thumbnailPath = createThumbnail(filePath)
                         } catch (err) {
@@ -498,7 +512,7 @@ export async function readFolderContent(data: { path: string | string[]; depth?:
             })
         )
 
-        folderContent.set(folderPath, { isFolder: true, path: folderPath, name: path.basename(folderPath), files: filePaths })
+        folderContent.set(folderPath, { isFolder: true, path: folderPath, name: path.basename(folderPath), files: filePaths, noMedia: noMedia ? true : undefined })
     }
 
     return Object.fromEntries(folderContent)
@@ -604,15 +618,17 @@ export function getFileInfo(filePath: string) {
 }
 
 // READ EXIF
-export function readExifData({ id }: { id: string }): Promise<{ id: string; exif: ExifData }> {
+export function readExifData({ id }: { id: string }): Promise<{ id: string; exif: ExifData | undefined }> {
     return new Promise((resolve) => {
         try {
             new ExifImage({ image: id }, (err, exifData) => {
                 actionComplete(err, "Error getting EXIF data")
-                if (!err) resolve({ id, exif: exifData })
+                // always settle the promise, otherwise an awaiting IPC request hangs until it times out
+                resolve({ id, exif: err ? undefined : exifData })
             })
         } catch (err) {
             actionComplete(err as Error, "Error loading EXIF image")
+            resolve({ id, exif: undefined })
         }
     })
 }
@@ -1096,7 +1112,7 @@ let currentlyBundling = false
  *
  * @param openFolderWhenDone [default=false] Whether to open the output folder when done
  */
-export function bundleMediaFiles({ openFolder = false }: { openFolder?: boolean } = {}) {
+export function bundleMediaFiles({ openFolder = false, outputPath = "" }: { openFolder?: boolean; outputPath?: string } = {}) {
     if (currentlyBundling) return
     currentlyBundling = true
 
@@ -1138,7 +1154,7 @@ export function bundleMediaFiles({ openFolder = false }: { openFolder?: boolean 
             if (["image", "video", "audio", "pdf", "ppt"].includes(type)) {
                 addFile(show.id)
             } else if (type === "folder") {
-                // WIP handle project media folders?
+                // skip media folder items, because it's a fixed folder path, regardless of the media inside
             }
         })
     }
@@ -1166,8 +1182,8 @@ export function bundleMediaFiles({ openFolder = false }: { openFolder?: boolean 
         return
     }
 
-    // bundle should use default Media folder, and not any custom sync folders
-    const outputFolder = getDataFolderPath("media")
+    // use custom output path or FreeShow Media folder
+    const outputFolder = outputPath || getDataFolderPath("media")
 
     // copy media files
     addToMediaFolder(allMediaFiles, outputFolder) // skip awaiting
@@ -1226,14 +1242,13 @@ function getFileParentFolderId(filePath: string) {
 export function loadShows(returnShows = false, reCacheNames: string[] = []) {
     const showsPath = getDataFolderPath("shows")
 
-    specialCaseFixer()
-
     // list all shows in folder
     let filesInFolder: string[] = readFolder(showsPath)
 
     const cachedShows = getStore("SHOWS") || {}
     const newCachedShows: TrimmedShows = {}
     const textCache: { [key: string]: string } = {}
+    const existingCacheText: { [key: string]: string } = getStore("CACHE")?.text || {}
 
     // create a map for quick lookup of cached shows by name
     const cachedShowNames = new Map<string, string>()
@@ -1251,6 +1266,12 @@ export function loadShows(returnShows = false, reCacheNames: string[] = []) {
         const matchingShowId = cachedShowNames.get(name)
         if (matchingShowId && !newCachedShows[matchingShowId]) {
             newCachedShows[matchingShowId] = cachedShows[matchingShowId]
+            // backfill: build text for an already-cached show that was never text-cached (e.g. it existed before the text cache)
+            if (!existingCacheText[matchingShowId]) {
+                const cachedShowData = parseShow(readFile(path.join(showsPath, `${name}.show`)) || "{}")
+                const cachedTxt = cachedShowData?.[1] ? getTextCacheString(cachedShowData[1]) : ""
+                if (cachedTxt) textCache[matchingShowId] = cachedTxt
+            }
             return
         }
 
@@ -1290,8 +1311,6 @@ export function loadShows(returnShows = false, reCacheNames: string[] = []) {
 export async function loadShowsAsync(returnShows = false, reCacheNames: string[] = []) {
     const showsPath = getDataFolderPath("shows")
 
-    specialCaseFixer()
-
     // list all shows in folder
     const allFiles = await readFolderAsync(showsPath)
     const filesInFolder = allFiles
@@ -1302,6 +1321,7 @@ export async function loadShowsAsync(returnShows = false, reCacheNames: string[]
     const cachedShows = getStore("SHOWS") || {}
     const newCachedShows: TrimmedShows = {}
     const textCache: { [key: string]: string } = {}
+    const existingCacheText: { [key: string]: string } = getStore("CACHE")?.text || {}
 
     // send already cached shows to the frontend immediately
     if (!returnShows && !reCacheNames.length && Object.keys(cachedShows).length) {
@@ -1324,6 +1344,13 @@ export async function loadShowsAsync(returnShows = false, reCacheNames: string[]
                 const matchingShowId = cachedShowNames.get(name)
                 if (matchingShowId && !newCachedShows[matchingShowId]) {
                     newCachedShows[matchingShowId] = cachedShows[matchingShowId]
+                    // backfill: build text for an already-cached show that was never text-cached
+                    if (!existingCacheText[matchingShowId]) {
+                        hadIo = true
+                        const cachedShowData = parseShow((await readFileAsync(path.join(showsPath, `${name}.show`))) || "{}")
+                        const cachedTxt = cachedShowData?.[1] ? getTextCacheString(cachedShowData[1]) : ""
+                        if (cachedTxt) textCache[matchingShowId] = cachedTxt
+                    }
                     return
                 }
 
@@ -1507,7 +1534,7 @@ const FIXES = {
         setAutoProfile("admin")
     }
 }
-function specialCaseFixer() {
+export function specialCaseFixer() {
     const defaultDataFolder = getDefaultDataFolderRoot()
     if (!doesPathExist(defaultDataFolder)) return
 

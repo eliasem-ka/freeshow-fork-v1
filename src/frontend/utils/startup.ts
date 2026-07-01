@@ -6,7 +6,7 @@ import { checkStartupActions } from "../components/actions/actions"
 import { getTimeFromInterval } from "../components/helpers/time"
 import { requestMain, requestMainMultiple, sendMain, sendMainMultiple } from "../IPC/main"
 import { cameraManager } from "../media/cameraManager"
-import { activePopup, alertMessage, cachePath, cloudSyncData, contentProviderData, currentWindow, deviceId, driveKeys, isDev, loaded, loadedState, os, providerConnections, shows, special, version, windowState } from "../stores"
+import { activePopup, alertMessage, cachePath, cloudSyncData, contentProviderData, currentWindow, dataPath, deviceId, driveKeys, isDev, loaded, loadedState, os, providerConnections, shows, special, version, windowState } from "../stores"
 import { startTracking } from "./analytics"
 import { wait, waitUntilValueIsDefined } from "./common"
 import { getDefaultElements } from "./createData"
@@ -106,12 +106,6 @@ function autoBackup() {
     const minTimeToBackup = getTimeFromInterval(interval)
 
     if (now - lastBackup > minTimeToBackup) {
-        special.update((a) => {
-            // subtract one hour from time to keep it relatively the same with each backup
-            a.autoBackupPrevious = now - 3600000
-            return a
-        })
-
         // 20% chance of backing up all shows as well (just in case)
         save(false, { backup: true, isAutoBackup: true, backupShows: Math.random() < 0.2 })
     }
@@ -119,7 +113,7 @@ function autoBackup() {
 
 export function contentProviderSync() {
     const providers = [
-        { providerId: "planningcenter" as ContentProviderId, scope: "services" },
+        { providerId: "planningcenter" as ContentProviderId, scope: "services", data: get(contentProviderData).planningcenter?.syncFolderIds || [] },
         { providerId: "churchApps" as ContentProviderId, scope: "plans", data: { shows: get(shows), categories: get(contentProviderData).churchApps?.syncCategories || [] } },
         { providerId: "amazinglife" as ContentProviderId, scope: "openid profile email" }
     ]
@@ -147,7 +141,8 @@ function getMainData() {
         [Main.GET_OS]: (a) => (a ? os.set(a) : null),
         [Main.GET_CACHE_PATH]: (a) => cachePath.set(a || ""),
         [Main.DEVICE_ID]: (a) => deviceId.set(a || ""),
-        [Main.MAXIMIZED]: (a) => windowState.set({ ...get(windowState), maximized: a ?? false })
+        [Main.MAXIMIZED]: (a) => windowState.set({ ...get(windowState), maximized: a ?? false }),
+        [Main.DATA_PATH]: (a) => (a ? dataPath.set(a) : null)
     })
 }
 

@@ -14,6 +14,7 @@ import { togglePlayingMedia } from "../../utils/shortcuts"
 import { contentProviderSync } from "../../utils/startup"
 import { updateTransition } from "../../utils/transitions"
 import { startMetronome } from "../drawer/audio/metronome"
+import { getInteraction, startInteraction, stopInteraction } from "../drawer/pages/interactions"
 import { pauseAllTimers } from "../drawer/timers/timers"
 import { getSlideThumbnail, getThumbnail } from "../helpers/media"
 import { changeStageOutputLayout, startCamera, startScreen, startStreaming, stopStreaming, toggleOutputs } from "../helpers/output"
@@ -334,6 +335,12 @@ export const API_ACTIONS = {
     send_rest_command: (data: API_rest_command) => sendRestCommandSync(data), // DEPRECATED, use emit_action instead
     emit_action: (data: API_emitter) => emitData(data),
 
+    // Interactions
+    interaction_start: (data: API_id) => startInteraction(data.id),
+    interaction_stop: (data: API_id) => stopInteraction(data.id),
+    interaction_next: (data: API_id) => getInteraction(data.id)?.next(),
+    interaction_previous: (data: API_id) => getInteraction(data.id)?.previous(),
+
     // OBS Studio
     obs_set_scene: (data: API_id) => obsSetScene(data.id),
     obs_start_livestream: () => obsStartLivestream(),
@@ -352,8 +359,8 @@ export const API_ACTIONS = {
     toggle_log_song_usage: (data: API_toggle_specific) => toggleLogSongUsage(data),
 
     // ACTION
-    name_run_action: (data: API_strval) => runActionByName(data.value), // BC
-    run_action: (data: API_id) => runActionId(data.id), // BC
+    name_run_action: (data: API_strval) => runActionByName(data.value, "api"), // BC
+    run_action: (data: API_id) => runActionId(data.id, "api"), // BC
     toggle_action: (data: API_toggle) => toggleAction(data),
 
     // ADD
@@ -428,7 +435,3 @@ export async function triggerAction(data: API) {
 
     sendMain(Main.API_TRIGGER, { ...data, returnId, data: returnData })
 }
-
-// export function sendDataAPI(data: any) {
-//     send("API_DATA", data)
-// }

@@ -2,12 +2,13 @@
     import { createEventDispatcher } from "svelte"
     import { timers } from "../../../stores"
     import { translateText } from "../../../utils/language"
-    import { sortByName } from "../../helpers/array"
+    import { clone, sortByName } from "../../helpers/array"
     import { getDynamicIds, getVariablesIds } from "../../helpers/showActions"
     import MaterialDropdown from "../../inputs/MaterialDropdown.svelte"
     import MaterialNumberInput from "../../inputs/MaterialNumberInput.svelte"
     import MaterialTextInput from "../../inputs/MaterialTextInput.svelte"
     import { newToast } from "../../../utils/common"
+    import { AudioMicrophone } from "../../../audio/audioMicrophone"
 
     export let input: { [key: string]: string }
 
@@ -20,7 +21,8 @@
             { value: "text", label: translateText("edit.text") },
             { value: "timer", label: translateText("items.timer") },
             { value: "variable", label: translateText("items.variable") },
-            { value: "dynamicValue", label: translateText("actions.dynamic_value") }
+            { value: "dynamicValue", label: translateText("actions.dynamic_value") },
+            { value: "volume", label: translateText("media.volume") }
         ],
         operator: [
             { value: "is", label: translateText("conditions.is") },
@@ -30,29 +32,56 @@
         ],
         data: [{ value: "value", label: translateText("conditions.value") }] // { id: "state" }
     }
+    const numberOperators = [
+        { value: "isAbove", label: translateText("conditions.is_above") },
+        { value: "isBelow", label: translateText("conditions.is_below") }
+    ]
 
     // WIP time_hours/video_time etc. should be treated as number like timer, instead of string
 
     const customOperators = {
         timer: [
             { value: "isRunning", label: translateText("conditions.is_running") },
+            ...clone(numberOperators), //
+            { value: "is", label: translateText("conditions.is") },
+            { value: "isNot", label: translateText("conditions.is_not") }
+        ],
+        // text: [{ value: "has_text", name: translateText("conditions.has_text") }, ...conditions.operator],
+        variable: [
+            ...clone(conditionValues.operator),
+            // only valid for values that can be converted into a valid number
+            ...clone(numberOperators)
+        ],
+        dynamicValue: [
+            ...clone(conditionValues.operator),
+            // only valid for values that can be converted into a valid number
+            ...clone(numberOperators)
+        ],
+        volume: [
             { value: "isAbove", label: translateText("conditions.is_above") },
             { value: "isBelow", label: translateText("conditions.is_below") },
             { value: "is", label: translateText("conditions.is") },
             { value: "isNot", label: translateText("conditions.is_not") }
         ]
-        // text: [{ value: "has_text", name: translateText("conditions.has_text") }, ...conditions.operator],
     }
     const customData = {
         timer: [{ value: "seconds", label: translateText("conditions.seconds") }]
     }
     const noData: string[] = ["isRunning"] // ["has_text"]
 
-    const elementOptions = {
+    let micsList: { value: string; label: string }[] = []
+    $: if (elementId === "volume") {
+        AudioMicrophone.getList()?.then((devices) => {
+            micsList = devices?.map((d) => ({ value: d.deviceId, label: d.label })) || []
+        })
+    }
+
+    $: elementOptions = {
         timer: [{ value: "", label: translateText("stage.first_active_timer") }, ...convertToOptions($timers)],
         variable: getVariables(),
         // , text.includes("{scripture") ? "scripture" : null
-        dynamicValue: getDynamicIds(true).map((a) => ({ value: a, label: a }))
+        dynamicValue: getDynamicIds(true).map((a) => ({ value: a, label: a })),
+        volume: [{ value: "main", label: translateText("audio.main") }, ...micsList]
     }
     export function convertToOptions(object) {
         const options = Object.keys(object).map((id) => ({ value: id, label: object[id].name }))

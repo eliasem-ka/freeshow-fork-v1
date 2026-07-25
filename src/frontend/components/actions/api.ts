@@ -30,6 +30,7 @@ import { pauseTimeline, setTimelineTime, startTimeline, stopTimeline } from "../
 import { runActionByName, runActionId, toggleAction } from "./actions"
 import { getOutput, getOutputGroupName, getOutputSlideText, getPlayingAudioData, getPlayingAudioDuration, getPlayingAudioTime, getPlayingPlaylist, getPlayingVideoDuration, getPlayingVideoState, getPlayingVideoTime, getPlaylists, getProject, getProjects, getScriptures, getShow, getShowLayout, getShows, getSlide, getVariable, getVariables } from "./apiGet"
 import { createScriptureCollection } from "../drawer/bible/scripture"
+import { createAnimatedSong, type API_animated_song } from "./custom/songShow"
 import {
     addGroup,
     addToProject,
@@ -371,6 +372,7 @@ export const API_ACTIONS = {
     // CREATE
     create_show: (data: API_create_show) => convertText({ noFormatting: true, open: false, ...data }),
     create_project: (data: API_create_project) => createProject(data),
+    create_animated_song: (data: API_animated_song) => createAnimatedSong(data),
 
     // DELETE
     delete_project: (data: API_id) => deleteProject(data.id),

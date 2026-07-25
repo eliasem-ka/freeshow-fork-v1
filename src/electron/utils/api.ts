@@ -206,7 +206,7 @@ async function receivedData(data: any = {}, log: (...msg: any[]) => void): Promi
 
     // get_* actions return data; a few non-get actions also return a result (e.g. created show id)
     // fork-only actions that reply with data — add new ones here, nothing else in this file changes
-    const RETURNS_DATA = ["create_scripture_show", "create_animated_song"]
+    const RETURNS_DATA = ["create_scripture_show", "create_animated_song", "create_lyric_template"]
     const returnsData = data.action.startsWith("get_") || RETURNS_DATA.includes(data.action)
     if (returnsData) data.returnId = uid(5)
 

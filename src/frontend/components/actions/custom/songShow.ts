@@ -57,6 +57,11 @@ export type SongAnimation = {
     lineStyle?: string
     /** Explicit per-line typography, index 0 = first line. Overrides the preset. */
     lineStyles?: LineStyle[]
+    /**
+     * Colour forced on every line, whatever the preset says. Needed whenever the
+     * lyrics sit on a light band, where the default white would vanish.
+     */
+    textColor?: string
 
     /**
      * Reveal the lyric progressively instead of all at once.
@@ -99,6 +104,14 @@ export type API_animated_song = {
     bpm?: number
     slides: SongSlideInput[]
     animation?: SongAnimation
+    /** Overlay drawn on every slide, e.g. the band from createLyricTemplate. */
+    overlayId?: string
+    /** Template recorded on the show, so the look can be re-applied later. */
+    templateId?: string
+    /** Position/size for the text box, e.g. the `text` box from createLyricTemplate. */
+    textBox?: { left: number; top: number; width: number; height: number }
+    /** Extra CSS appended to every text item's box, e.g. a matching rotation. */
+    itemStyle?: string
 }
 
 /// PRESETS ///
@@ -165,9 +178,16 @@ const LINE_STYLE_ALIASES: { [key: string]: string } = {
 }
 
 function resolveLineStyles(animation: SongAnimation): LineStyle[] {
-    if (animation.lineStyles?.length) return animation.lineStyles
-    const key = (animation.lineStyle || "uniform").toLowerCase().trim()
-    return LINE_STYLE_PRESETS[LINE_STYLE_ALIASES[key] || key] || LINE_STYLE_PRESETS.uniform
+    let styles: LineStyle[]
+    if (animation.lineStyles?.length) styles = animation.lineStyles
+    else {
+        const key = (animation.lineStyle || "uniform").toLowerCase().trim()
+        styles = LINE_STYLE_PRESETS[LINE_STYLE_ALIASES[key] || key] || LINE_STYLE_PRESETS.uniform
+    }
+
+    if (!animation.textColor) return styles
+    // dark text on a light band also wants the shadow gone, it only muddies it
+    return styles.map((style) => ({ ...style, color: animation.textColor, shadow: false }))
 }
 
 /** Style for line `index`; the last entry repeats for any further lines. */
@@ -322,6 +342,9 @@ export function createAnimatedSong(data: API_animated_song) {
     const reveal = resolveReveal(animation, bpm)
     const useStagger = staggerLines && !reveal
 
+    const textBox: TextBox = data.textBox || DEFAULT_TEXT_BOX
+    const itemStyle = data.itemStyle || ""
+
     const slides: { [key: string]: Slide } = {}
     const layoutSlides: SlideData[] = []
     let totalSeconds = 0
@@ -332,7 +355,7 @@ export function createAnimatedSong(data: API_animated_song) {
         // an empty entry still gets a slide, so "instrumental"/break sections keep their timing
         const slideId = uid()
 
-        const items = useStagger && lines.length > 1 ? buildStaggeredItems(lines, lineStyles, staggerSeconds) : [buildItem(lines, lineStyles, reveal)]
+        const items = useStagger && lines.length > 1 ? buildStaggeredItems(lines, lineStyles, staggerSeconds, textBox, itemStyle) : [buildItem(lines, lineStyles, reveal, textBox, itemStyle)]
 
         const slide: Slide = {
             group: input.group ?? null,
@@ -346,6 +369,8 @@ export function createAnimatedSong(data: API_animated_song) {
 
         const layoutSlide: SlideData = { id: slideId }
         if (transitionMs > 0) layoutSlide.transition = { ...transition }
+        // the band rides along with every slide, so it never has to be cued by hand
+        if (data.overlayId) layoutSlide.overlays = [data.overlayId]
 
         const seconds = input.seconds ?? (bpm && input.beats ? beatsToSeconds(input.beats, bpm) : 0)
         if (autoAdvance && seconds > 0) {
@@ -358,7 +383,7 @@ export function createAnimatedSong(data: API_animated_song) {
     })
 
     const layoutId = uid()
-    const show: Show = new ShowObj(false, data.category || null, layoutId)
+    const show: Show = new ShowObj(false, data.category || null, layoutId, new Date().getTime(), data.templateId || true)
     show.name = checkName(data.name || "Alabanza")
     show.slides = slides
     show.layouts[layoutId].slides = layoutSlides
@@ -397,7 +422,7 @@ export function createAnimatedSong(data: API_animated_song) {
  * With a reveal configured, the delay keeps counting across lines so the whole
  * slide reads as one continuous phrase rather than restarting each line.
  */
-function buildItem(lines: string[], styles: LineStyle[], reveal: RevealConfig | null = null): Item {
+function buildItem(lines: string[], styles: LineStyle[], reveal: RevealConfig | null = null, box: TextBox = DEFAULT_TEXT_BOX, extraStyle = ""): Item {
     const sourceLines = lines.length ? lines : [""]
     let unit = 0
 
@@ -412,7 +437,7 @@ function buildItem(lines: string[], styles: LineStyle[], reveal: RevealConfig | 
 
     return {
         type: "text",
-        style: DEFAULT_ITEM_STYLE,
+        style: `top:${box.top}px;left:${box.left}px;height:${box.height}px;width:${box.width}px;${extraStyle}`,
         textFit: "shrinkToFit",
         lines: builtLines
     }
@@ -421,6 +446,12 @@ function buildItem(lines: string[], styles: LineStyle[], reveal: RevealConfig | 
 // the box DEFAULT_ITEM_STYLE describes, which the stacked rows divide up
 const BOX_TOP = 88
 const BOX_HEIGHT = 904
+const BOX_LEFT = 50
+const BOX_WIDTH = 1820
+
+/** Geometry the text items are laid out in; a template can move it. */
+type TextBox = { left: number; top: number; width: number; height: number }
+const DEFAULT_TEXT_BOX: TextBox = { left: BOX_LEFT, top: BOX_TOP, width: BOX_WIDTH, height: BOX_HEIGHT }
 
 /**
  * One textbox per line, stacked vertically, each delayed by a whole beat.
@@ -430,18 +461,18 @@ const BOX_HEIGHT = 904
  * Rows are sized in proportion to their font size, so a large lead line and a
  * smaller answer line each get the space they need instead of an even split.
  */
-function buildStaggeredItems(lines: string[], styles: LineStyle[], staggerSeconds: number): Item[] {
+function buildStaggeredItems(lines: string[], styles: LineStyle[], staggerSeconds: number, box: TextBox = DEFAULT_TEXT_BOX, extraStyle = ""): Item[] {
     const sizes = lines.map((_, i) => styleForLine(styles, i).fontSize ?? 100)
     const totalSize = sizes.reduce((sum, size) => sum + size, 0) || 1
 
-    let top = BOX_TOP
+    let top = box.top
     return lines.map((text, i) => {
         const style = styleForLine(styles, i)
-        const rowHeight = (sizes[i] / totalSize) * BOX_HEIGHT
+        const rowHeight = (sizes[i] / totalSize) * box.height
 
         const item: Item = {
             type: "text",
-            style: `top:${Math.round(top)}px;left:50px;height:${Math.round(rowHeight)}px;width:1820px;`,
+            style: `top:${Math.round(top)}px;left:${box.left}px;height:${Math.round(rowHeight)}px;width:${box.width}px;${extraStyle}`,
             textFit: "shrinkToFit",
             lines: [buildLine(text, style)]
         }

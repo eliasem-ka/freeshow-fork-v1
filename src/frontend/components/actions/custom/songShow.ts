@@ -57,7 +57,25 @@ export type SongAnimation = {
     lineStyle?: string
     /** Explicit per-line typography, index 0 = first line. Overrides the preset. */
     lineStyles?: LineStyle[]
+
+    /**
+     * Reveal the lyric progressively instead of all at once.
+     * Takes precedence over staggerLines, which works at the item level and
+     * would fight the per-chunk CSS delays.
+     */
+    reveal?: RevealMode
+    /** Step between revealed units, in beats. */
+    revealBeats?: number
+    /** Step between revealed units in seconds; used when there is no bpm. */
+    revealSeconds?: number
+    /** Motion for each unit. "rise" forces inline-block on the chunk. */
+    revealMotion?: RevealMotion
+    /** How long a single unit takes to appear, in ms. Default 350. */
+    revealDuration?: number
 }
+
+export type RevealMode = "none" | "word" | "character"
+export type RevealMotion = "fade" | "rise" | "blur"
 
 /** Typography for one line of a slide. Rendered as plain CSS on the text chunk. */
 export type LineStyle = {
@@ -175,6 +193,80 @@ function buildLine(text: string, style: LineStyle): Line {
     return { align: "", text: [{ value: text, style: lineStyleToCss(style) }] }
 }
 
+/// PROGRESSIVE REVEAL ///
+
+type RevealConfig = {
+    mode: RevealMode
+    stepMs: number
+    motion: RevealMotion
+    durationMs: number
+}
+
+const REVEAL_KEYFRAMES: { [key in RevealMotion]: string } = {
+    fade: "fsRevealFade",
+    rise: "fsRevealRise",
+    blur: "fsRevealBlur"
+}
+
+// default step between units, expressed in beats
+const DEFAULT_REVEAL_BEATS: { [key in RevealMode]: number } = { none: 0, word: 0.25, character: 0.05 }
+// fallback step in ms when the tempo is unknown
+const DEFAULT_REVEAL_MS: { [key in RevealMode]: number } = { none: 0, word: 180, character: 40 }
+
+function resolveReveal(animation: SongAnimation, bpm: number): RevealConfig | null {
+    const mode = animation.reveal || "none"
+    if (mode === "none") return null
+
+    let stepMs: number
+    if (animation.revealSeconds !== undefined) stepMs = animation.revealSeconds * 1000
+    else if (bpm) stepMs = beatsToSeconds(animation.revealBeats ?? DEFAULT_REVEAL_BEATS[mode], bpm) * 1000
+    else stepMs = DEFAULT_REVEAL_MS[mode]
+
+    return {
+        mode,
+        stepMs: Math.max(0, Math.round(stepMs)),
+        motion: animation.revealMotion || "fade",
+        durationMs: Math.max(50, Math.round(animation.revealDuration ?? 350))
+    }
+}
+
+/**
+ * Split a line into animated chunks.
+ *
+ * Each chunk is its own <span> in the output, so a plain CSS animation-delay
+ * staggers them — no renderer logic needed beyond the global keyframes.
+ * Whitespace rides along with its word (word mode) or gets its own chunk
+ * without consuming a step (character mode), so line wrapping is unchanged and
+ * joining the chunks back together reproduces the original text.
+ */
+function splitForReveal(text: string, style: LineStyle, reveal: RevealConfig, startUnit: number): { chunks: { value: string; style: string }[]; units: number } {
+    const base = lineStyleToCss(style)
+    const chunks: { value: string; style: string }[] = []
+    let unit = startUnit
+
+    const pieces = reveal.mode === "word" ? text.match(/\S+\s*/g) || [] : text.split("")
+
+    for (const piece of pieces) {
+        // whitespace is invisible: show it with the unit before it rather than
+        // spending a step on it, otherwise gaps drift out of time
+        const isBlank = !piece.trim()
+        const delay = Math.max(0, unit - (isBlank ? 1 : 0)) * reveal.stepMs
+        chunks.push({ value: piece, style: base + revealCss(reveal, delay) })
+        if (!isBlank) unit++
+    }
+
+    if (!chunks.length) chunks.push({ value: text, style: base })
+    return { chunks, units: unit - startUnit }
+}
+
+function revealCss(reveal: RevealConfig, delayMs: number): string {
+    // "both" holds the from-state during the delay, so nothing flashes early
+    let css = `animation: ${REVEAL_KEYFRAMES[reveal.motion]} ${reveal.durationMs}ms ease-out ${delayMs}ms both;`
+    // transforms are ignored on inline elements, so lift the chunk out of inline flow
+    if (reveal.motion === "rise") css += "display: inline-block;"
+    return css
+}
+
 /// TIMING ///
 
 const MIN_TRANSITION_MS = 80
@@ -225,6 +317,11 @@ export function createAnimatedSong(data: API_animated_song) {
     const staggerSeconds = animation.staggerSeconds ?? (bpm ? beatsToSeconds(animation.staggerBeats ?? 1, bpm) : 0.4)
     const lineStyles = resolveLineStyles(animation)
 
+    // a reveal delays each chunk from the moment the item mounts, while the
+    // line stagger delays the item itself — running both would desync them
+    const reveal = resolveReveal(animation, bpm)
+    const useStagger = staggerLines && !reveal
+
     const slides: { [key: string]: Slide } = {}
     const layoutSlides: SlideData[] = []
     let totalSeconds = 0
@@ -235,7 +332,7 @@ export function createAnimatedSong(data: API_animated_song) {
         // an empty entry still gets a slide, so "instrumental"/break sections keep their timing
         const slideId = uid()
 
-        const items = staggerLines && lines.length > 1 ? buildStaggeredItems(lines, lineStyles, staggerSeconds) : [buildItem(lines, lineStyles)]
+        const items = useStagger && lines.length > 1 ? buildStaggeredItems(lines, lineStyles, staggerSeconds) : [buildItem(lines, lineStyles, reveal)]
 
         const slide: Slide = {
             group: input.group ?? null,
@@ -285,7 +382,8 @@ export function createAnimatedSong(data: API_animated_song) {
         bpm: bpm || null,
         transition: { type: transitionType, duration: transitionMs, easing },
         autoAdvance,
-        staggerLines,
+        staggerLines: useStagger,
+        reveal: reveal ? { mode: reveal.mode, stepMs: reveal.stepMs, motion: reveal.motion, durationMs: reveal.durationMs } : null,
         lineStyle: animation.lineStyles?.length ? "custom" : animation.lineStyle || "uniform",
         timedSlides,
         totalSeconds: round(totalSeconds, 2)
@@ -294,13 +392,29 @@ export function createAnimatedSong(data: API_animated_song) {
 
 /// ITEMS ///
 
-/** A single textbox holding every line of the slide. */
-function buildItem(lines: string[], styles: LineStyle[]): Item {
+/**
+ * A single textbox holding every line of the slide.
+ * With a reveal configured, the delay keeps counting across lines so the whole
+ * slide reads as one continuous phrase rather than restarting each line.
+ */
+function buildItem(lines: string[], styles: LineStyle[], reveal: RevealConfig | null = null): Item {
+    const sourceLines = lines.length ? lines : [""]
+    let unit = 0
+
+    const builtLines: Line[] = sourceLines.map((text, i) => {
+        const style = styleForLine(styles, i)
+        if (!reveal) return buildLine(text, style)
+
+        const { chunks, units } = splitForReveal(text, style, reveal, unit)
+        unit += units
+        return { align: "", text: chunks }
+    })
+
     return {
         type: "text",
         style: DEFAULT_ITEM_STYLE,
         textFit: "shrinkToFit",
-        lines: (lines.length ? lines : [""]).map((text, i) => buildLine(text, styleForLine(styles, i)))
+        lines: builtLines
     }
 }
 

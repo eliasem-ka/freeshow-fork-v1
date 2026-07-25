@@ -629,4 +629,43 @@
             transform: translateY(0);
         }
     }
+
+    /*
+     * FORK-ONLY: per-word / per-character reveal for tempo-synced songs.
+     * Declared global so they can be referenced from an item's stored style
+     * string, which Svelte does not rewrite. Built by
+     * components/actions/custom/songShow.ts — nothing else uses them.
+     * "fade" and "blur" work on the inline span as-is; "rise" needs the span
+     * to be inline-block, which songShow.ts sets inline on those chunks.
+     */
+    @keyframes -global-fsRevealFade {
+        from {
+            opacity: 0;
+        }
+        to {
+            opacity: 1;
+        }
+    }
+
+    @keyframes -global-fsRevealRise {
+        from {
+            opacity: 0;
+            transform: translateY(0.3em);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    @keyframes -global-fsRevealBlur {
+        from {
+            opacity: 0;
+            filter: blur(14px);
+        }
+        to {
+            opacity: 1;
+            filter: blur(0);
+        }
+    }
 </style>

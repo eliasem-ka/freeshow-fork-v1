@@ -14,13 +14,12 @@
 
 import { get } from "svelte/store"
 import { uid } from "uid"
-import type { Item, Show, Slide, SlideData, Transition, TransitionType } from "../../../../types/Show"
+import type { Item, Line, Show, Slide, SlideData, Transition, TransitionType } from "../../../../types/Show"
 import { ShowObj } from "../../../classes/Show"
 import { activeProject } from "../../../stores"
 import { DEFAULT_ITEM_STYLE } from "../../edit/scripts/itemHelpers"
 import { history } from "../../helpers/history"
 import { checkName } from "../../helpers/show"
-import { getLine } from "../../show/formatTextEditor"
 
 /// TYPES ///
 
@@ -52,6 +51,26 @@ export type SongAnimation = {
     staggerLines?: boolean
     /** Gap between staggered lines, in beats. Default: 1 beat. */
     staggerBeats?: number
+    /** Gap between staggered lines in seconds; used when there is no bpm. */
+    staggerSeconds?: number
+    /** Named typography look applied per line ("concierto", "enfasis", "uniforme"). */
+    lineStyle?: string
+    /** Explicit per-line typography, index 0 = first line. Overrides the preset. */
+    lineStyles?: LineStyle[]
+}
+
+/** Typography for one line of a slide. Rendered as plain CSS on the text chunk. */
+export type LineStyle = {
+    fontSize?: number // px
+    fontFamily?: string
+    weight?: string | number
+    color?: string
+    opacity?: number
+    italic?: boolean
+    uppercase?: boolean
+    letterSpacing?: number // px
+    /** Soft drop shadow, keeps lyrics readable over busy video backgrounds. */
+    shadow?: boolean
 }
 
 export type API_animated_song = {
@@ -102,6 +121,60 @@ function resolvePreset(name: string | undefined): PresetDef {
     return PRESETS[PRESET_ALIASES[key] || key] || PRESETS.soft
 }
 
+/// TYPOGRAPHY ///
+
+// Looks are described as [first line, following lines]. FreeShow ships CMGSans,
+// so contrast comes from weight/size/spacing rather than an uninstalled family.
+const LINE_STYLE_PRESETS: { [key: string]: LineStyle[] } = {
+    uniform: [{ fontSize: 100, weight: "bold", shadow: true }],
+    // lead line reads big and tight, answer line lighter and smaller
+    concert: [
+        { fontSize: 110, weight: 700, letterSpacing: 1, shadow: true },
+        { fontSize: 78, weight: 300, opacity: 0.82, shadow: true }
+    ],
+    emphasis: [
+        { fontSize: 115, weight: 700, shadow: true },
+        { fontSize: 84, weight: 400, italic: true, opacity: 0.85, shadow: true }
+    ]
+}
+
+const LINE_STYLE_ALIASES: { [key: string]: string } = {
+    uniforme: "uniform",
+    igual: "uniform",
+    concierto: "concert",
+    enfasis: "emphasis",
+    énfasis: "emphasis"
+}
+
+function resolveLineStyles(animation: SongAnimation): LineStyle[] {
+    if (animation.lineStyles?.length) return animation.lineStyles
+    const key = (animation.lineStyle || "uniform").toLowerCase().trim()
+    return LINE_STYLE_PRESETS[LINE_STYLE_ALIASES[key] || key] || LINE_STYLE_PRESETS.uniform
+}
+
+/** Style for line `index`; the last entry repeats for any further lines. */
+function styleForLine(styles: LineStyle[], index: number): LineStyle {
+    return styles[Math.min(index, styles.length - 1)] || {}
+}
+
+function lineStyleToCss(style: LineStyle): string {
+    const css: string[] = []
+    css.push(`font-size: ${style.fontSize ?? 100}px`)
+    if (style.fontFamily) css.push(`font-family: ${style.fontFamily}`)
+    if (style.weight !== undefined) css.push(`font-weight: ${style.weight}`)
+    if (style.color) css.push(`color: ${style.color}`)
+    if (style.opacity !== undefined) css.push(`opacity: ${style.opacity}`)
+    if (style.italic) css.push("font-style: italic")
+    if (style.uppercase) css.push("text-transform: uppercase")
+    if (style.letterSpacing !== undefined) css.push(`letter-spacing: ${style.letterSpacing}px`)
+    if (style.shadow) css.push("text-shadow: 0 4px 12px rgb(0 0 0 / 0.5)")
+    return css.join(";") + ";"
+}
+
+function buildLine(text: string, style: LineStyle): Line {
+    return { align: "", text: [{ value: text, style: lineStyleToCss(style) }] }
+}
+
 /// TIMING ///
 
 const MIN_TRANSITION_MS = 80
@@ -147,7 +220,10 @@ export function createAnimatedSong(data: API_animated_song) {
 
     const autoAdvance = animation.autoAdvance ?? !!bpm
     const staggerLines = !!animation.staggerLines
-    const staggerSeconds = bpm ? beatsToSeconds(animation.staggerBeats ?? 1, bpm) : 0
+    // the stagger is independent of auto-advance: the operator can hold a slide
+    // manually while its lines still land on the beat
+    const staggerSeconds = animation.staggerSeconds ?? (bpm ? beatsToSeconds(animation.staggerBeats ?? 1, bpm) : 0.4)
+    const lineStyles = resolveLineStyles(animation)
 
     const slides: { [key: string]: Slide } = {}
     const layoutSlides: SlideData[] = []
@@ -159,7 +235,7 @@ export function createAnimatedSong(data: API_animated_song) {
         // an empty entry still gets a slide, so "instrumental"/break sections keep their timing
         const slideId = uid()
 
-        const items = staggerLines && lines.length > 1 ? buildStaggeredItems(lines, staggerSeconds) : [buildItem(lines)]
+        const items = staggerLines && lines.length > 1 ? buildStaggeredItems(lines, lineStyles, staggerSeconds) : [buildItem(lines, lineStyles)]
 
         const slide: Slide = {
             group: input.group ?? null,
@@ -209,6 +285,8 @@ export function createAnimatedSong(data: API_animated_song) {
         bpm: bpm || null,
         transition: { type: transitionType, duration: transitionMs, easing },
         autoAdvance,
+        staggerLines,
+        lineStyle: animation.lineStyles?.length ? "custom" : animation.lineStyle || "uniform",
         timedSlides,
         totalSeconds: round(totalSeconds, 2)
     }
@@ -217,33 +295,43 @@ export function createAnimatedSong(data: API_animated_song) {
 /// ITEMS ///
 
 /** A single textbox holding every line of the slide. */
-function buildItem(lines: string[]): Item {
+function buildItem(lines: string[], styles: LineStyle[]): Item {
     return {
         type: "text",
         style: DEFAULT_ITEM_STYLE,
         textFit: "shrinkToFit",
-        lines: (lines.length ? lines : [""]).map((text) => getLine(text, []))
+        lines: (lines.length ? lines : [""]).map((text, i) => buildLine(text, styleForLine(styles, i)))
     }
 }
+
+// the box DEFAULT_ITEM_STYLE describes, which the stacked rows divide up
+const BOX_TOP = 88
+const BOX_HEIGHT = 904
 
 /**
  * One textbox per line, stacked vertically, each delayed by a whole beat.
  * `showTimer` is what the output uses as the item's in-transition delay, so the
  * lines land on successive beats without touching the renderer.
+ *
+ * Rows are sized in proportion to their font size, so a large lead line and a
+ * smaller answer line each get the space they need instead of an even split.
  */
-function buildStaggeredItems(lines: string[], staggerSeconds: number): Item[] {
-    // matches DEFAULT_ITEM_STYLE's box, split evenly between the lines
-    const boxTop = 88
-    const boxHeight = 904
-    const rowHeight = boxHeight / lines.length
+function buildStaggeredItems(lines: string[], styles: LineStyle[], staggerSeconds: number): Item[] {
+    const sizes = lines.map((_, i) => styleForLine(styles, i).fontSize ?? 100)
+    const totalSize = sizes.reduce((sum, size) => sum + size, 0) || 1
 
+    let top = BOX_TOP
     return lines.map((text, i) => {
+        const style = styleForLine(styles, i)
+        const rowHeight = (sizes[i] / totalSize) * BOX_HEIGHT
+
         const item: Item = {
             type: "text",
-            style: `top:${Math.round(boxTop + i * rowHeight)}px;left:50px;height:${Math.round(rowHeight)}px;width:1820px;`,
+            style: `top:${Math.round(top)}px;left:50px;height:${Math.round(rowHeight)}px;width:1820px;`,
             textFit: "shrinkToFit",
-            lines: [getLine(text, [])]
+            lines: [buildLine(text, style)]
         }
+        top += rowHeight
 
         const delay = round(i * staggerSeconds)
         if (delay > 0) item.actions = { showTimer: delay }

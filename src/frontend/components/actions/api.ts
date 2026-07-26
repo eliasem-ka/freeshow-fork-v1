@@ -32,6 +32,7 @@ import { getOutput, getOutputGroupName, getOutputSlideText, getPlayingAudioData,
 import { createScriptureCollection } from "../drawer/bible/scripture"
 import { createAnimatedSong, type API_animated_song } from "./custom/songShow"
 import { createLyricTemplate, type API_lyric_template } from "./custom/lyricTemplate"
+import { deleteShows, saveData, type API_delete_shows } from "./custom/showAdmin"
 import {
     addGroup,
     addToProject,
@@ -375,6 +376,8 @@ export const API_ACTIONS = {
     create_project: (data: API_create_project) => createProject(data),
     create_animated_song: (data: API_animated_song) => createAnimatedSong(data),
     create_lyric_template: (data: API_lyric_template) => createLyricTemplate(data),
+    delete_shows: (data: API_delete_shows) => deleteShows(data),
+    save_data: () => saveData(),
 
     // DELETE
     delete_project: (data: API_id) => deleteProject(data.id),

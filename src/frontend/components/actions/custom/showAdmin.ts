@@ -8,8 +8,7 @@
 // Wired in through a single entry in API_ACTIONS, like the other custom modules.
 
 import { get } from "svelte/store"
-import { shows } from "../../../stores"
-import { save } from "../../../utils/save"
+import { projects, shows } from "../../../stores"
 import { history } from "../../helpers/history"
 
 export type API_delete_shows = {
@@ -55,15 +54,52 @@ export function deleteShows(data: API_delete_shows = {}) {
     return { deleted: matched.length, matched, missing, confirmed: true }
 }
 
-/**
- * API: flush everything to disk now.
- *
- * Shows created through the API only live in memory until FreeShow saves, and
- * autosave defaults to every 15 minutes — so a bulk import that is interrupted
- * before then is lost entirely. A migration script should call this when it
- * finishes.
- */
-export function saveData() {
-    save()
-    return { ok: true, saved: Object.keys(get(shows)).length }
+export type API_trim_project = {
+    /** Project to trim. */
+    projectId: string
+    /** Item ids to keep, in order. Everything else is removed. */
+    keepIds: string[]
+    confirm?: boolean
 }
+
+/**
+ * API: cut a project back to a chosen set of items.
+ *
+ * Creating a show adds it to whatever project is active, so a bulk import
+ * silently appends hundreds of entries to whatever the user had open. There is
+ * no stock way to undo that in one step.
+ */
+export function trimProject(data: API_trim_project) {
+    const project = get(projects)[data.projectId]
+    if (!project) return { error: `proyecto no encontrado: ${data.projectId}` }
+
+    const keep = new Set(data.keepIds || [])
+    const before = project.shows?.length || 0
+    const kept = (project.shows || []).filter((s: any) => keep.has(s.id))
+
+    if (!data.confirm) {
+        return { ok: false, before, wouldKeep: kept.length, wouldRemove: before - kept.length, note: "nada cambiado: enviá confirm=true" }
+    }
+
+    projects.update((all) => {
+        if (!all[data.projectId]) return all
+        all[data.projectId].shows = kept.map((s: any, i: number) => ({ ...s, index: i }))
+        return all
+    })
+
+    return { ok: true, before, after: kept.length, removed: before - kept.length }
+}
+
+/**
+ * REMOVED: saveData.
+ *
+ * It forced FreeShow to write everything in showsCache to disk. That cache
+ * degrades under bulk API use — entries come back with their slides, and
+ * sometimes their layout, emptied — and saving then wrote those blanks over
+ * good files. It destroyed the lyrics of 503 shows once, and 26 more after a
+ * guard was added, because the damage takes shapes the guard did not match.
+ *
+ * Bulk writes now bypass the app: freeshow-mcp/src/escribirShow.js writes
+ * .show files directly while FreeShow is closed. For anything created through
+ * the API, FreeShow's own save on quit is the only safe path.
+ */

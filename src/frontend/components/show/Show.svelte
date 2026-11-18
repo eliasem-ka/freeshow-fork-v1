@@ -20,6 +20,7 @@
     import ProjectShowPlaceholder from "./placeholder/ProjectShowPlaceholder.svelte"
     import PowerPointPreview from "./ppt/PowerPointPreview.svelte"
     import Section from "./Section.svelte"
+    import BackgroundTray from "./BackgroundTray.svelte"
     import ShowNotes from "./ShowNotes.svelte"
     import Slides from "./Slides.svelte"
 
@@ -131,6 +132,8 @@
     </div>
 
     {#if show && (show.type || "show") === "show"}
+        <!-- fork: backgrounds one click away -->
+        <BackgroundTray />
         <ShowNotes />
 
         <!-- || $showsCache[show.id || ""]?.layouts[$showsCache[show.id || ""]?.settings?.activeLayout || ""]?.timeline?.actions?.length -->

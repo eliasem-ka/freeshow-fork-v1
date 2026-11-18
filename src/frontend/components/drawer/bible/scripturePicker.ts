@@ -49,6 +49,15 @@ export function isStartOfBookName(name: string, typed: string) {
     return bookNames(name).some((bookName) => bookName.startsWith(query) || bookName.replace(/^\d+/, "").startsWith(query))
 }
 
+/**
+ * True when the text could still be the start of a book's name as it is written ("san j", "1 cor"):
+ * by name only, not by abbreviation or loose letters. Used to tell a phrase ("de tal manera")
+ * from a book that is being typed out.
+ */
+export function isBookPrefix(books: { name: string }[], text: string) {
+    return books.some((book) => isStartOfBookName(book.name, text))
+}
+
 function isSubsequence(query: string, text: string) {
     let index = 0
     for (const char of text) {

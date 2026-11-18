@@ -9,7 +9,7 @@
     import Icon from "../../helpers/Icon.svelte"
     import T from "../../helpers/T.svelte"
     import Loader from "../../main/Loader.svelte"
-    import { filterBooks, filterNumbers, getVerseNumbers, isStartOfBookName, type PickerBook } from "./scripturePicker"
+    import { filterBooks, filterNumbers, getVerseNumbers, isBookPrefix, isStartOfBookName, type PickerBook } from "./scripturePicker"
 
     export let books: { number: number | string; name: string }[] | null
     export let booksData: { abbreviation?: string; category?: { color?: string } | null }[] = []
@@ -22,6 +22,8 @@
     export let activeVerses: (number | string)[] = []
     export let reference = ""
     export let previewText = ""
+    // verses found for the phrase being searched (null while there is no search)
+    export let results: TextMatch[] | null = null
 
     const dispatch = createEventDispatcher<{
         book: string
@@ -29,7 +31,11 @@
         verses: number[]
         verseclick: { event: MouseEvent; id: string; isClick: boolean }
         play: null
+        search: string
+        result: { match: TextMatch; play: boolean }
     }>()
+
+    type TextMatch = { book: number | string; chapter: number | string; verse: { number: number | string; text: string }; reference: string }
 
     // every book / chapter pick is one navigation for the parent, which counts the finished ones here.
     // Keys typed while one is still loading wait, so "jn316" works however fast it is typed.
@@ -100,6 +106,71 @@
     // typing the name: those letters are taken as part of it, and not as a new search
     let pickedBook: { name: string; typed: string; tail: string } | null = null
 
+    /// TEXT SEARCH ///
+    // Letters that are not the start of any book are a phrase: "de tal manera" finds Juan 3:16.
+    // "/" (or the magnifier) starts a phrase search on purpose.
+
+    let textMode = false
+    let phrase = ""
+    // the letters typed in a row since the last number, pick by click or Escape
+    let buffer = ""
+    let resultIndex = 0
+    let searchTimeout: ReturnType<typeof setTimeout> | null = null
+    $: if (results) resultIndex = 0
+    $: searching = textMode && phrase.trim().length >= MIN_PHRASE && results === null
+    const MIN_PHRASE = 3
+
+    function startTextSearch(text = "") {
+        textMode = true
+        typed = ""
+        rangeStart = null
+        pickedBook = null
+        pending = []
+        setPhrase(text)
+    }
+    function stopTextSearch() {
+        textMode = false
+        buffer = ""
+        setPhrase("")
+    }
+    function setPhrase(text: string) {
+        phrase = text
+        if (searchTimeout) clearTimeout(searchTimeout)
+        const query = phrase.trim().length >= MIN_PHRASE ? phrase.trim() : ""
+        // a short pause, so an online Bible is not asked on every letter
+        searchTimeout = setTimeout(() => dispatch("search", query), query ? 250 : 0)
+    }
+    function pickResult(match: TextMatch | undefined, play = false) {
+        if (!match) return
+        stopTextSearch()
+        step = "verse"
+        lastPick = null
+        requested++
+        dispatch("result", { match, play })
+    }
+    function textKey(key: string, shift = false) {
+        if (key === "Enter") return pickResult(results?.[resultIndex], shift)
+        if (key === "Backspace") {
+            if (!phrase) return stopTextSearch()
+            return setPhrase(phrase.slice(0, -1))
+        }
+        if (key.length === 1) setPhrase(phrase + key)
+    }
+    // keep the highlighted result in view
+    let resultsElem: HTMLElement | undefined
+    $: if (textMode && resultsElem && resultIndex >= 0) tick().then(() => resultsElem?.querySelector(".isActive")?.scrollIntoView({ block: "nearest" }))
+
+    function highlight(text: string) {
+        const plain = (text || "").replace(/<[^>]*>/g, "")
+        const words = phrase
+            .trim()
+            .split(/\s+/)
+            .filter((word) => word.length > 1)
+        if (!words.length) return plain
+        const pattern = new RegExp("(" + words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")", "gi")
+        return plain.replace(pattern, "<b>$1</b>")
+    }
+
     function reject() {
         rejected = true
         pending = []
@@ -154,6 +225,8 @@
                 pickedBook.tail = tail
                 return
             }
+            // not that book's name, and not the start of any other: it is a phrase
+            if (buffer.trim().length >= 2 && !isBookPrefix(bookList, buffer)) return startTextSearch(buffer)
             // not that book's name after all: it is a new search, with every letter typed since
             setStep("book")
             for (const letter of tail) type(letter)
@@ -176,6 +249,8 @@
                 pending = [char, ...pending]
                 return
             }
+            // letters that fit no book are a phrase to look for
+            if (!matches.length && !isDigit && buffer.trim().length >= 2) return startTextSearch(buffer)
             if (!matches.length) return reject()
             if (matches.length === 1) {
                 pickBook(matches[0].id)
@@ -224,7 +299,13 @@
         else if (step === "chapter") setStep("book")
     }
 
-    function handleKey(key: string) {
+    function handleKey(key: string, shift = false) {
+        if (textMode) return textKey(key, shift)
+        if (key === "/" || key === "?") return startTextSearch()
+        // the run of letters being typed, in case it turns out to be a phrase and not a book
+        if (/^\p{L}$/u.test(key) || (key === " " && buffer)) buffer += key
+        else buffer = key === "Backspace" ? buffer.slice(0, -1) : ""
+
         if (key === "Enter") {
             // nothing left to confirm: send the picked verse to the output
             if (!confirm() && step === "verse" && activeVerses.length) dispatch("play", null)
@@ -254,7 +335,22 @@
     function keydown(e: KeyboardEvent) {
         if (e.ctrlKey || e.metaKey || e.altKey) return
 
+        if (textMode && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+            e.preventDefault()
+            e.stopPropagation()
+            const last = (results?.length || 1) - 1
+            resultIndex = Math.max(0, Math.min(last, resultIndex + (e.key === "ArrowDown" ? 1 : -1)))
+            return
+        }
+
         if (e.key === "Escape") {
+            buffer = ""
+            if (textMode) {
+                e.preventDefault()
+                e.stopPropagation()
+                stopTextSearch()
+                return
+            }
             if (!typed && step === "book" && !pending.length) return // let Escape do its usual job
             e.preventDefault()
             e.stopPropagation()
@@ -268,8 +364,8 @@
         e.preventDefault()
         e.stopPropagation()
 
-        if (waiting) pending = [...pending, e.key]
-        else handleKey(e.key)
+        if (waiting && !textMode) pending = [...pending, e.key]
+        else handleKey(e.key, e.shiftKey)
     }
 
     export function focus() {
@@ -306,23 +402,29 @@
         })
     }
 
-    $: hint = step === "book" ? "scripture.picker_type_book" : step === "chapter" ? "scripture.picker_type_chapter" : rangeStart !== null ? "scripture.picker_type_range" : "scripture.picker_type_verse"
+    $: hint = textMode ? "scripture.picker_type_text" : step === "book" ? "scripture.picker_type_book" : step === "chapter" ? "scripture.picker_type_chapter" : rangeStart !== null ? "scripture.picker_type_range" : "scripture.picker_type_verse"
 </script>
 
 <div class="picker" role="none" on:click={areaClick}>
     <div class="bar" class:rejected class:waiting>
-        <Icon id="search" size={1.3} white />
+        <button class="find" class:on={textMode} title={translateText("scripture.picker_text_search", $dictionary)} on:click={() => (textMode ? stopTextSearch() : startTextSearch())}>
+            <Icon id="search" size={1.3} white />
+        </button>
 
-        <button class="crumb" class:current={step === "book"} class:placeholder={step === "book" ? !typed : !activeBookName} on:click={() => setStep("book")}>
-            {(step === "book" && typed) || activeBookName || translateText("scripture.picker_book", $dictionary)}
-        </button>
-        <button class="crumb number" class:current={step === "chapter"} class:placeholder={step === "chapter" ? !typed : !activeChapter} disabled={!activeBook} on:click={() => setStep("chapter")}>
-            {(step === "chapter" && typed) || (step !== "book" || !typed ? activeChapter : "") || "—"}
-        </button>
-        <span class="divider">:</span>
-        <button class="crumb number" class:current={step === "verse"} class:placeholder={step === "verse" ? !typed && rangeStart === null : !activeVerseLabel} disabled={!activeBook || !activeChapter} on:click={() => setStep("verse")}>
-            {#if step === "verse" && rangeStart !== null}{rangeStart}-{typed || "…"}{:else}{(step === "verse" && typed) || (step === "verse" || !typed ? activeVerseLabel : "") || "—"}{/if}
-        </button>
+        {#if textMode}
+            <span class="phrase" class:placeholder={!phrase}>{phrase || translateText("scripture.picker_text_placeholder", $dictionary)}<i class="caret" /></span>
+        {:else}
+            <button class="crumb" class:current={step === "book"} class:placeholder={step === "book" ? !typed : !activeBookName} on:click={() => setStep("book")}>
+                {(step === "book" && typed) || activeBookName || translateText("scripture.picker_book", $dictionary)}
+            </button>
+            <button class="crumb number" class:current={step === "chapter"} class:placeholder={step === "chapter" ? !typed : !activeChapter} disabled={!activeBook} on:click={() => setStep("chapter")}>
+                {(step === "chapter" && typed) || (step !== "book" || !typed ? activeChapter : "") || "—"}
+            </button>
+            <span class="divider">:</span>
+            <button class="crumb number" class:current={step === "verse"} class:placeholder={step === "verse" ? !typed && rangeStart === null : !activeVerseLabel} disabled={!activeBook || !activeChapter} on:click={() => setStep("verse")}>
+                {#if step === "verse" && rangeStart !== null}{rangeStart}-{typed || "…"}{:else}{(step === "verse" && typed) || (step === "verse" || !typed ? activeVerseLabel : "") || "—"}{/if}
+            </button>
+        {/if}
 
         <!-- the real text field: invisible, it only receives the keys -->
         <input bind:this={inputElem} class="edit pickerInput" type="text" value="" aria-label={translateText("scripture.picker_type_book", $dictionary)} on:keydown={keydown} on:input={(e) => (e.currentTarget.value = "")} />
@@ -330,62 +432,81 @@
         <span class="hint"><T id={hint} /></span>
     </div>
 
-    <div class="columns">
-        <div class="column books" class:current={step === "book"} bind:this={booksElem}>
-            {#if bookList.length}
-                <div class="tiles bookTiles">
-                    {#each shownBooks as book (book.id)}
-                        {@const isActive = activeBook?.toString() === book.id}
-                        <button class="tile book" class:isActive title={book.name} style="--tile-color: {book.color || 'var(--secondary)'};background-color: {book.color ? fadeColor(book.color, isActive ? 0.45 : 0.16) : ''};color: {book.color ? brightenDarkColor(book.color) : ''};" on:click={() => pickBook(book.id)}>
-                            {book.name}
-                        </button>
-                    {/each}
-                </div>
+    {#if textMode}
+        <div class="results" bind:this={resultsElem}>
+            {#if phrase.trim().length < MIN_PHRASE}
+                <p class="empty"><T id="scripture.picker_text_short" /></p>
+            {:else if searching}
+                <Loader />
+            {:else if !results?.length}
+                <p class="empty"><T id="empty.search" /></p>
             {:else}
-                <Loader />
+                {#each results as match, i (match.reference + i)}
+                    <button class="result" class:isActive={i === resultIndex} on:click={() => pickResult(match)} on:dblclick={() => pickResult(match, true)}>
+                        <span class="where">{match.reference}</span>
+                        <span class="what">{@html highlight(match.verse.text)}</span>
+                    </button>
+                {/each}
             {/if}
         </div>
+    {:else}
+        <div class="columns">
+            <div class="column books" class:current={step === "book"} bind:this={booksElem}>
+                {#if bookList.length}
+                    <div class="tiles bookTiles">
+                        {#each shownBooks as book (book.id)}
+                            {@const isActive = activeBook?.toString() === book.id}
+                            <button class="tile book" class:isActive title={book.name} style="--tile-color: {book.color || 'var(--secondary)'};background-color: {book.color ? fadeColor(book.color, isActive ? 0.45 : 0.16) : ''};color: {book.color ? brightenDarkColor(book.color) : ''};" on:click={() => pickBook(book.id)}>
+                                {book.name}
+                            </button>
+                        {/each}
+                    </div>
+                {:else}
+                    <Loader />
+                {/if}
+            </div>
 
-        <div class="column chapters" class:current={step === "chapter"} bind:this={chaptersElem}>
-            <h4><T id="scripture.picker_chapter" /></h4>
-            {#if chapters?.length}
-                <div class="tiles">
-                    {#each shownChapters as chapter (chapter)}
-                        <button class="tile" class:isActive={activeChapter === chapter.toString()} on:click={() => pickChapter(chapter)}>{chapter}</button>
-                    {/each}
-                </div>
-            {:else if activeBook}
-                <Loader />
-            {/if}
-        </div>
+            <div class="column chapters" class:current={step === "chapter"} bind:this={chaptersElem}>
+                <h4><T id="scripture.picker_chapter" /></h4>
+                {#if chapters?.length}
+                    <div class="tiles">
+                        {#each shownChapters as chapter (chapter)}
+                            <button class="tile" class:isActive={activeChapter === chapter.toString()} on:click={() => pickChapter(chapter)}>{chapter}</button>
+                        {/each}
+                    </div>
+                {:else if activeBook}
+                    <Loader />
+                {/if}
+            </div>
 
-        <div class="column verses" class:current={step === "verse"} bind:this={versesElem}>
-            <h4><T id="scripture.picker_verse" /></h4>
-            {#if verses.length}
-                <div class="tiles">
-                    {#each shownVerses as verse (verse.id)}
-                        {@const part = Number(verse.id.split("-")[0].split("_")[1] || 0)}
-                        <button
-                            class="tile"
-                            class:isActive={isVerseActive(verse.id, activeVerses)}
-                            class:part={part > 1}
-                            title={verse.text?.replace(/<[^>]*>/g, "") || ""}
-                            on:mousedown={(event) => dispatch("verseclick", { event, id: verse.id, isClick: false })}
-                            on:click={(event) => {
-                                setStep("verse")
-                                dispatch("verseclick", { event, id: verse.id, isClick: true })
-                            }}
-                            on:dblclick={() => dispatch("play", null)}
-                        >
-                            {verse.number}{#if part}<small>{String.fromCharCode(96 + part)}</small>{/if}
-                        </button>
-                    {/each}
-                </div>
-            {:else if activeChapter}
-                <Loader />
-            {/if}
+            <div class="column verses" class:current={step === "verse"} bind:this={versesElem}>
+                <h4><T id="scripture.picker_verse" /></h4>
+                {#if verses.length}
+                    <div class="tiles">
+                        {#each shownVerses as verse (verse.id)}
+                            {@const part = Number(verse.id.split("-")[0].split("_")[1] || 0)}
+                            <button
+                                class="tile"
+                                class:isActive={isVerseActive(verse.id, activeVerses)}
+                                class:part={part > 1}
+                                title={verse.text?.replace(/<[^>]*>/g, "") || ""}
+                                on:mousedown={(event) => dispatch("verseclick", { event, id: verse.id, isClick: false })}
+                                on:click={(event) => {
+                                    setStep("verse")
+                                    dispatch("verseclick", { event, id: verse.id, isClick: true })
+                                }}
+                                on:dblclick={() => dispatch("play", null)}
+                            >
+                                {verse.number}{#if part}<small>{String.fromCharCode(96 + part)}</small>{/if}
+                            </button>
+                        {/each}
+                    </div>
+                {:else if activeChapter}
+                    <Loader />
+                {/if}
+            </div>
         </div>
-    </div>
+    {/if}
 
     <div class="preview">
         <span class="ref">{reference}</span>
@@ -488,6 +609,94 @@
     }
 
     /* COLUMNS */
+
+    .find {
+        display: flex;
+        padding: 4px;
+        background: none;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+    }
+    .find:hover,
+    .find.on {
+        background-color: rgb(255 255 255 / 0.1);
+    }
+    .phrase {
+        flex: 1;
+        min-width: 0;
+        font-size: 1.25em;
+        font-weight: 600;
+        white-space: pre;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .phrase.placeholder {
+        opacity: 0.4;
+        font-weight: 400;
+    }
+    .caret {
+        display: inline-block;
+        width: 2px;
+        height: 1em;
+        margin-inline-start: 2px;
+        vertical-align: text-bottom;
+        background-color: var(--secondary);
+        animation: blink 1s steps(2) infinite;
+    }
+    @keyframes blink {
+        50% {
+            opacity: 0;
+        }
+    }
+
+    .results {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 6px;
+    }
+    .results .empty {
+        padding: 20px;
+        text-align: center;
+        opacity: 0.6;
+    }
+    .result {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        padding: 9px 12px;
+        font: inherit;
+        font-size: 1.05em;
+        text-align: start;
+        color: var(--text);
+        background-color: var(--primary-darker);
+        border: 2px solid transparent;
+        border-radius: 8px;
+        cursor: pointer;
+    }
+    .result:hover {
+        background-color: var(--primary-lighter);
+    }
+    .result.isActive {
+        border-color: var(--secondary);
+    }
+    .result .where {
+        flex: 0 0 190px;
+        font-weight: 700;
+        color: var(--secondary);
+    }
+    .result .what {
+        flex: 1;
+        white-space: normal;
+        line-height: 1.3;
+    }
+    .result .what :global(b) {
+        color: var(--secondary);
+    }
 
     .columns {
         flex: 1;

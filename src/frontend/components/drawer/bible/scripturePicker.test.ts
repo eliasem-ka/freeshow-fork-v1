@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { filterBooks, filterNumbers, getVerseNumbers, isStartOfBookName, normalizeBookText } from "./scripturePicker"
+import { filterBooks, filterNumbers, getVerseNumbers, isBookPrefix, isStartOfBookName, normalizeBookText } from "./scripturePicker"
 
 const names = ["Génesis", "Éxodo", "Josué", "Jueces", "1 Samuel", "2 Samuel", "Job", "Jeremías", "Joel", "Jonás", "Mateo", "Marcos", "Lucas", "Juan", "Hechos", "Romanos", "1 Corintios", "2 Corintios", "Santiago", "1 Juan", "2 Juan", "3 Juan", "Judas", "Apocalipsis"]
 const books = names.map((name) => ({ name, abbreviation: "" }))
@@ -79,6 +79,16 @@ describe("filterBooks with titled Gospels", () => {
         expect(isStartOfBookName("San Juan", "sanjua")).toBe(true)
         expect(isStartOfBookName("1 Corintios", "corin")).toBe(true)
         expect(isStartOfBookName("San Juan", "juanm")).toBe(false)
+    })
+    it("tells a phrase from a book that is being typed out", () => {
+        const all = [...rv, { name: "Deuteronomio", abbreviation: "" }, { name: "Amós", abbreviation: "" }]
+        expect(isBookPrefix(all, "san j")).toBe(true)
+        expect(isBookPrefix(all, "deut")).toBe(true)
+        expect(isBookPrefix(all, "1 ju")).toBe(true)
+        // "det" has the letters of Deuteronomio in order, but nobody writes it like that
+        expect(isBookPrefix(all, "de t")).toBe(false)
+        expect(isBookPrefix(all, "amor")).toBe(false)
+        expect(isBookPrefix(all, "santo")).toBe(false)
     })
     it("keeps the letters of John apart from the Gospel", () => {
         expect(pickRv("1j")).toEqual(["1 Juan"])

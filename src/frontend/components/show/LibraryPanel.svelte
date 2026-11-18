@@ -6,7 +6,7 @@
     import { onMount } from "svelte"
     import type { ShowList } from "../../../types/Show"
     import { addProjectItem } from "../../converters/project"
-    import { activeDrawerTab, activeProfile, activeProject, activeShow, categories, dictionary, focusedArea, projects, sortedShowsList, special } from "../../stores"
+    import { activeDrawerTab, activeProfile, activeProject, activeShow, categories, dictionary, focusedArea, projects, quickSearchActive, sortedShowsList, special } from "../../stores"
     import { translateText } from "../../utils/language"
     import { getAccess } from "../../utils/profile"
     import { formatSearch, showSearch } from "../../utils/search"
@@ -155,6 +155,10 @@
             <span class="count">{list.length}</span>
             <span style="flex: 1;" />
             <Icon id={collapsed !== onTop ? "arrow_up" : "arrow_down"} size={1.1} white />
+        </MaterialButton>
+        <!-- the global search: songs by lyric, Bible verses and media (Ctrl+G) -->
+        <MaterialButton style="padding: 0.3em 0.6em;" title="{translateText('actions.search_everything', $dictionary)} [Ctrl+G]" on:click={() => quickSearchActive.set(true)}>
+            <Icon id="search" size={1.1} white />
         </MaterialButton>
         <MaterialButton style="padding: 0.3em 0.6em;" title={translateText(onTop ? "actions.library_move_down" : "actions.library_move_up", $dictionary)} on:click={() => setSpecial("libraryPanelTop", !onTop)}>
             <Icon id={onTop ? "down" : "up"} size={1.1} white />

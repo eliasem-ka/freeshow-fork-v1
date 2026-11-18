@@ -10,6 +10,7 @@
     import Preview from "./components/output/preview/Preview.svelte"
     import SettingsTabs from "./components/settings/SettingsTabs.svelte"
     import LibraryPanel from "./components/show/LibraryPanel.svelte"
+    import ServicePanel from "./components/show/ServicePanel.svelte"
     import Projects from "./components/show/Projects.svelte"
     import Show from "./components/show/Show.svelte"
     import ShowTools from "./components/show/ShowTools.svelte"
@@ -82,6 +83,10 @@
             <div class="right" class:row={width > DEFAULT_WIDTH * 1.8}>
                 <Preview />
                 {#if page === "show"}
+                    <!-- fork: "now / next" panel of the service view -->
+                    {#if $focusMode}
+                        <ServicePanel />
+                    {/if}
                     {#if $activeShow && ($activeShow.type === "show" || $activeShow.type === undefined) && !$focusMode}
                         <ShowTools />
                     {/if}

@@ -1079,6 +1079,29 @@
         openVerse(updateVersesSelection(e, id, isClick))
         if (isClick && isActiveInOutput && !e.ctrlKey && !e.metaKey) playScripture()
     }
+    // text search of the picker: the phrase goes to the Bible, the verse picked is opened
+    let pickerResults: any[] | null = null
+    let pickerSearchId = 0
+    async function pickerSearch(phrase: string) {
+        const id = ++pickerSearchId
+        pickerResults = null
+        if (!phrase) return
+        try {
+            const found = await currentBibleData?.bibleData?.textSearch(phrase)
+            if (id === pickerSearchId) pickerResults = (found || []).slice(0, 80)
+        } catch (err) {
+            console.error(err)
+            if (id === pickerSearchId) pickerResults = []
+        }
+    }
+    function pickerResult(match: any, play: boolean) {
+        pickerSearchId++
+        pickerResults = null
+        pickerNavigate(async () => {
+            await openBook(match.book, [match.chapter], [[match.verse.number]])
+            if (play) playWhenLoaded = true
+        })
+    }
     $: pickerPreview = $scriptureMode === "picker" ? getPickerPreview(splittedVerses, activeReference) : ""
     function getPickerPreview(..._updaters: any[]) {
         const picked = (activeReference.verses[activeReference.verses.length - 1] || []).map((a) => a.toString())
@@ -1158,6 +1181,9 @@
                 reference="{previewBibleData?.name ? getShortBibleName(previewBibleData.name) + ' · ' : ''}{reference}"
                 previewText={pickerPreview}
                 settled={pickerSettled}
+                results={pickerResults}
+                on:search={(e) => pickerSearch(e.detail)}
+                on:result={(e) => pickerResult(e.detail.match, e.detail.play)}
                 on:book={(e) => pickerNavigate(() => pickerOpenBook(e.detail))}
                 on:chapter={(e) => pickerNavigate(() => openChapter([e.detail]))}
                 on:verses={(e) => pickerVerses(e.detail)}

@@ -13,6 +13,7 @@
     import Center from "../system/Center.svelte"
     import { quicksearch, quickSearchCategoryNames, selectQuicksearchValue, type SearchCategory } from "./quicksearch"
     import { highlightText } from "./searchHighlight"
+    import { addMediaToProject, getLibraryBibleResults, presentQuicksearchValue, prioritizeLibrary } from "./quicksearchLibrary"
 
     let values: any[] = []
     let searchValue = ""
@@ -28,8 +29,17 @@
         const results = await quicksearch(value, category)
         if (currentId !== searchId) return
 
-        values = results
+        // fork: songs, Bible and media first (quicksearchLibrary.ts)
+        values = prioritizeLibrary(results)
         selectedIndex = 0
+
+        // fork: the Bible is searched apart (an online Bible answers later) and joins the list when it is ready
+        if (category && category !== "bible") return
+        const bibleResults = await getLibraryBibleResults(value)
+        if (currentId !== searchId || !bibleResults.length) return
+        const selected = values[selectedIndex]
+        values = prioritizeLibrary([...values, ...bibleResults])
+        selectedIndex = Math.max(0, values.indexOf(selected))
     }
 
     function scheduleSearch(value: string, category: SearchCategory | null, immediate = false) {
@@ -115,7 +125,12 @@
         if (!$quickSearchActive) return
 
         if (e.key === "Enter" && values.length) {
-            selectQuicksearchValue(values[selectedIndex], e.ctrlKey || e.metaKey)
+            // fork: Shift+Enter sends it to the screen, Ctrl+Enter adds it to the project (media too)
+            const value = values[selectedIndex]
+            const control = e.ctrlKey || e.metaKey
+            if (e.shiftKey && presentQuicksearchValue(value)) return
+            if (control && addMediaToProject(value)) return
+            selectQuicksearchValue(value, control)
             selectedIndex = 0
         } else if (e.key === "ArrowDown" && values.length) {
             e.preventDefault()
@@ -219,6 +234,12 @@
                             </div>
                         {/each}
                     </div>
+                    <!-- fork: what the keys do with a result -->
+                    <div class="keys">
+                        <span><b>Enter</b> <T id="actions.search_open" /></span>
+                        <span><b>Ctrl+Enter</b> <T id="actions.search_add" /></span>
+                        <span><b>Shift+Enter</b> <T id="actions.search_present" /></span>
+                    </div>
                 {:else}
                     <div class="values" in:fade>
                         <Center faded>
@@ -232,6 +253,19 @@
 {/if}
 
 <style>
+    .keys {
+        display: flex;
+        gap: 18px;
+        padding: 6px 14px 2px;
+        font-size: 0.8em;
+        opacity: 0.6;
+        border-top: 1px solid rgb(255 255 255 / 0.08);
+    }
+    .keys b {
+        font-weight: 600;
+        opacity: 0.9;
+    }
+
     .quicksearch {
         position: absolute;
         left: 50%;

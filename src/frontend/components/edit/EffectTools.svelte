@@ -1,13 +1,14 @@
 <script lang="ts">
+    import { onDestroy } from "svelte"
     import type { EffectItem } from "../../../types/Effects"
     import type { TabsObj } from "../../../types/Tabs"
-    import { activeEdit, effects } from "../../stores"
+    import { activeEdit, effects, hoveredEffectItem } from "../../stores"
     import { clone } from "../helpers/array"
+    import DragItemWrapper from "../helpers/DragItemWrapper.svelte"
+    import { createDragReorder } from "../helpers/dragReorder"
     import Icon from "../helpers/Icon.svelte"
-    import { addToPos } from "../helpers/mover"
     import T from "../helpers/T.svelte"
     import InputRow from "../input/InputRow.svelte"
-    import MaterialButton from "../inputs/MaterialButton.svelte"
     import MaterialColorInput from "../inputs/MaterialColorInput.svelte"
     import MaterialNumberInput from "../inputs/MaterialNumberInput.svelte"
     import Tabs from "../main/Tabs.svelte"
@@ -26,10 +27,11 @@
     $: currentEffect = $effects[effectId] || {}
 
     export function valueChanged(input: any, itemIndex: number) {
-        if (!effectId) return
+        if (!effectId || !currentEffect?.items?.[itemIndex]) return
 
         effects.update((a) => {
-            a[effectId].items[itemIndex][input.id] = input.values.value
+            if (!a[effectId]?.items?.[itemIndex]) return a
+            a[effectId].items[itemIndex] = { ...a[effectId].items[itemIndex], [input.id]: input.values.value }
             return a
         })
     }
@@ -39,48 +41,42 @@
         return { default: clone(effectSections[item.type]) }
     }
 
-    function deleteItem(index: number) {
-        // not tested:
-        let newOpenedMenus: number[] = []
-        Object.keys(openedMenus).forEach((menuIndex: string | number) => {
-            menuIndex = Number(menuIndex)
-            if (!openedMenus[menuIndex] || menuIndex === index) return
-            newOpenedMenus.push(menuIndex + (menuIndex > index ? 1 : 0))
-        })
-        openedMenus = {}
-        newOpenedMenus.forEach((index) => (openedMenus[index] = true))
-
-        effects.update((a) => {
-            a[effectId].items.splice(index, 1)
-            return a
-        })
-    }
-
-    function toggleHidden(index: number) {
-        effects.update((a) => {
-            a[effectId].items[index].hidden = !a[effectId].items[index].hidden
-            return a
-        })
-    }
-
-    let moved = false
-    function move(index: number, newIndex: number) {
-        openedMenus = {}
-
-        effects.update((a) => {
-            const item = a[effectId].items.splice(index, 1)
-            a[effectId].items = addToPos(a[effectId].items, item, newIndex)
-            return a
-        })
-
-        moved = true
-        setTimeout(() => (moved = false))
-    }
-
     let currentItems: any[]
     $: currentItems = currentEffect.items || []
+    $: invertedItems = Array.isArray(currentItems) ? clone(currentItems).reverse() : []
+
+    const dragReorder = createDragReorder((fromIndices, toIndex) => {
+        const reordered = dragReorder.getReorderedList(invertedItems, fromIndices, toIndex)
+        effects.update((a) => {
+            if (!a[effectId]) return a
+            a[effectId].items = clone(reordered).reverse()
+            return a
+        })
+    })
+    const { dragOverIndex, draggedIndices } = dragReorder
+
+    // close all opened menus when dragging starts
+    $: if ($draggedIndices.length) openedMenus = {}
+
+    $: displayList = dragReorder.getReorderedList(invertedItems, $draggedIndices, $dragOverIndex)
+    $: isPlaceholderActive = $dragOverIndex !== null
 
     let openedMenus: { [key: string]: boolean } = {}
+
+    let prevId = ""
+    let prevLength = 0
+    $: {
+        // auto open the menu for a newly added item
+        if (effectId === prevId && currentItems.length > prevLength) {
+            openedMenus[currentItems.length - 1] = true
+        }
+        prevId = effectId
+        prevLength = currentItems.length
+    }
+
+    onDestroy(() => {
+        hoveredEffectItem.set(null)
+    })
 </script>
 
 <div class="main border editTools">
@@ -90,38 +86,34 @@
         {#if active === "effect"}
             {#if currentEffect}
                 <div class="items">
-                    {#key moved}
-                        {#each currentItems as item, i}
-                            {@const editContent = getItemSections(item)}
+                    {#each displayList as item, displayIndex}
+                        {@const originalIndex = currentItems.indexOf(item)}
+                        {@const index = originalIndex >= 0 ? originalIndex : currentItems.length - displayIndex - 1}
+                        {@const editContent = getItemSections(item)}
+                        {@const isPlaceholder = isPlaceholderActive && $draggedIndices.some((dIdx) => item === invertedItems[dIdx])}
 
-                            <InputRow arrow={!!editContent} bind:open={openedMenus[i]}>
-                                <div class="title">
-                                    <p style="width: 100%;"><T id="effect.{item.type === 'shape' ? item.shape : item.type}" /></p>
-                                </div>
+                        <DragItemWrapper index={displayIndex} controller={dragReorder} {isPlaceholder} handleOnly>
+                            <div class="item-row context #effect_item" id={index.toString()} data-index={index} on:mouseenter={() => hoveredEffectItem.set(item.hidden ? null : index)} on:mouseleave={() => hoveredEffectItem.set(null)} role="none">
+                                <InputRow arrow={!!editContent} bind:open={openedMenus[index]}>
+                                    <div class="title" style={item.hidden ? "opacity: 0.5;" : ""}>
+                                        {#if displayList.length > 1}
+                                            <span class="drag_handle" style="display: flex;align-items: center;cursor: grab;opacity: 0.6;padding-right: 8px;">
+                                                <Icon id="drag_dots" size={1.2} white />
+                                            </span>
+                                        {/if}
 
-                                {#if i < currentItems.length - 1}
-                                    <MaterialButton class="down" icon="down" on:click={() => move(i, i + 1)} />
-                                {/if}
-                                {#if i > 0}
-                                    <MaterialButton class="up" icon="up" on:click={() => move(i, i - 1)} />
-                                {/if}
+                                        <p style="width: 100%;"><T id="effect.{item.type === 'shape' ? item.shape : item.type}" /></p>
+                                    </div>
 
-                                <MaterialButton on:click={() => toggleHidden(i)}>
-                                    <Icon id={item.hidden ? "hide" : "eye"} white={!item.hidden} />
-                                </MaterialButton>
-
-                                <MaterialButton title="actions.delete" on:click={() => deleteItem(i)}>
-                                    <Icon id="delete" white />
-                                </MaterialButton>
-
-                                <svelte:fragment slot="menu">
-                                    {#if editContent}
-                                        <EditValues sections={editContent} {item} on:change={(e) => valueChanged(e.detail, i)} />
-                                    {/if}
-                                </svelte:fragment>
-                            </InputRow>
-                        {/each}
-                    {/key}
+                                    <svelte:fragment slot="menu">
+                                        {#if editContent}
+                                            <EditValues sections={editContent} {item} on:change={(e) => valueChanged(e.detail, index)} />
+                                        {/if}
+                                    </svelte:fragment>
+                                </InputRow>
+                            </div>
+                        </DragItemWrapper>
+                    {/each}
                 </div>
             {/if}
 
@@ -177,6 +169,11 @@
     }
 
     .items {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .item-row {
         display: flex;
         flex-direction: column;
     }

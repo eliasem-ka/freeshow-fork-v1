@@ -1,18 +1,18 @@
 <script lang="ts">
-    import { actions, activePage, activePopup, activeShow, activeTimers, contextActive, groups, guideActive, outLocked, outputs, overlayTimers, playingAudio, playingMetronome, resized, slideTimers, special } from "../../../stores"
+    import { actions, activePage, activePopup, activeShow, activeTimers, contextActive, groups, guideActive, isOptimizedMode, outLocked, outputs, overlayTimers, playingAudio, playingMetronome, resized, slideTimers, special } from "../../../stores"
     import { DEFAULT_WIDTH, isDarkTheme } from "../../../utils/common"
     import { formatSearch } from "../../../utils/search"
     import { getNormalizedKey, previewCtrlShortcuts, previewShortcuts } from "../../../utils/shortcuts"
     import { runAction } from "../../actions/actions"
+    import AudioMeter from "../../drawer/audio/AudioMeter.svelte"
     import { getSlideText } from "../../edit/scripts/textStyle"
     import Icon from "../../helpers/Icon.svelte"
     import T from "../../helpers/T.svelte"
-    import { getActiveOutputs, isOutCleared, outputSlideHasContent, setOutput } from "../../helpers/output"
+    import { getActiveOutputs, getFirstOutputIdWithBackground, isOutCleared, outputSlideHasContent, setOutput } from "../../helpers/output"
     import { getLayoutRef } from "../../helpers/show"
     import { getFewestOutputLines, getItemWithMostLines, playNextGroup, playPreviousGroup, updateOut } from "../../helpers/showActions"
     import { _show } from "../../helpers/shows"
     import { newSlideTimer } from "../../helpers/tick"
-    import { getFirstOutputIdWithAudableBackground } from "../../helpers/video"
     import Button from "../../inputs/Button.svelte"
     import MaterialButton from "../../inputs/MaterialButton.svelte"
     import ShowActions from "../ShowActions.svelte"
@@ -22,10 +22,9 @@
     import Overlay from "../tools/Overlay.svelte"
     import Show from "../tools/Show.svelte"
     import TimerControls from "../tools/TimerControls.svelte"
-    import AudioMeter from "./AudioMeter.svelte"
     import ClearButtons from "./ClearButtons.svelte"
+    import IcecastStatus from "./IcecastStatus.svelte"
     import MultiOutputs from "./MultiOutputs.svelte"
-    import PreviewOutputs from "./PreviewOutputs.svelte"
     import SpotifyController from "./SpotifyController.svelte"
 
     $: allActiveOutputs = getActiveOutputs($outputs, true, true, true)
@@ -34,7 +33,7 @@
     $: currentOutput = outputId ? $outputs[outputId] || {} : {}
 
     $: allOutputsWithBackground = allActiveOutputs.filter((id) => $outputs[id]?.out?.background)
-    $: backgroundOutputId = getFirstOutputIdWithAudableBackground(allOutputsWithBackground) || allOutputsWithBackground[0] || outputId
+    $: backgroundOutputId = getFirstOutputIdWithBackground(allOutputsWithBackground) || allOutputsWithBackground[0] || outputId
     $: currentBgOutput = backgroundOutputId ? $outputs[backgroundOutputId] || null : null
 
     let numberKeyTimeout: NodeJS.Timeout | null = null
@@ -42,9 +41,11 @@
     function keydown(e: KeyboardEvent) {
         if ($contextActive) return
         if ($guideActive || $activePopup === "assign_shortcut") return
-        if ((e.ctrlKey || e.metaKey || e.altKey) && previewCtrlShortcuts[e.key]) {
+
+        const ctrlShortcut = e.ctrlKey || e.metaKey ? previewCtrlShortcuts[getNormalizedKey(e)] : null
+        if (ctrlShortcut) {
             e.preventDefault()
-            previewCtrlShortcuts[e.key]()
+            ctrlShortcut()
         }
 
         const functionKey = /^F(?:[1-9]|1[0-9]|2[0-4])$/
@@ -52,7 +53,7 @@
 
         // start action with custom shortcut key
         // /^[A-Z]{1}$/i.test(e.key) &&
-        if (!e.ctrlKey && !e.metaKey && actionKeyActivate(e.key.toUpperCase())) {
+        if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && actionKeyActivate(e.key.toUpperCase())) {
             e.preventDefault()
             return
         }
@@ -244,7 +245,7 @@
     // $: if ($activePage === "draw") enablePreview = false
 
     const light = !isDarkTheme()
-    $: isOptimized = $special.optimizedMode
+    $: isOptimized = $isOptimizedMode
     $: isSplitted = $resized.rightPanel > DEFAULT_WIDTH * 1.8
 </script>
 
@@ -252,13 +253,13 @@
 
 <div id="previewArea" class="main">
     {#if enablePreview}
-        <PreviewOutputs />
-
         <div class="top">
             <MaterialButton class="hide" icon="hide" style="z-index: 2;" title="preview._hide_preview" on:click={() => (enablePreview = false)} />
             <!-- disable before hiding: disableTransitions={!enablePreview} -->
             <MultiOutputs />
-            <AudioMeter />
+            <div class="preview-meter">
+                <AudioMeter channelId="main" preview />
+            </div>
         </div>
     {:else}
         <Button on:click={() => (enablePreview = true)} style="width: 100%;" center dark>
@@ -274,7 +275,7 @@
     {/if}
 
     {#if $activePage === "show"}
-        <div class="section" style="margin-top: 2px;">
+        <div class="section clear-btns" style="margin-top: 2px;">
             <ClearButtons bind:autoChange activeClear={updatedActiveClear} on:update={(e) => (activeClear = e.detail)} />
 
             {#if updatedActiveClear === "background"}
@@ -296,6 +297,7 @@
             {/if}
         </div>
 
+        <IcecastStatus />
         <SpotifyController />
     {/if}
 </div>
@@ -305,6 +307,7 @@
         /* max-height: 50%; */
         flex: 1;
         min-width: 50%;
+        position: relative;
     }
 
     .top {
@@ -354,6 +357,12 @@
         transition: transform 0.2s ease;
     }
 
+    .section.clear-btns {
+        position: sticky;
+        bottom: 5px;
+        z-index: 10;
+    }
+
     .section.float {
         position: absolute;
         width: calc(100% - 10px);
@@ -365,5 +374,14 @@
     }
     .section.float.light {
         --background: rgba(225, 225, 225, 0.6);
+    }
+
+    .preview-meter {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        right: 0;
+        width: 4px;
+        z-index: 5;
     }
 </style>

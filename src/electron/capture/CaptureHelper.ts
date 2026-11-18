@@ -1,7 +1,10 @@
-import type { BrowserWindow, Display, NativeImage, Size } from "electron"
+import type { BrowserWindow, NativeImage, Size } from "electron"
 import electron from "electron"
 import { NdiSender } from "../ndi/NdiSender"
+import { OmtSender } from "../omt/OmtSender"
+import { ruleViolation } from "../utils/ruleCheck"
 import { OutputHelper } from "../output/OutputHelper"
+import { RenderGroups } from "../output/helpers/RenderGroups"
 import type { CaptureOptions } from "./CaptureOptions"
 import { CaptureLifecycle } from "./helpers/CaptureLifecycle"
 import { CaptureTransmitter } from "./helpers/CaptureTransmitter"
@@ -12,31 +15,47 @@ export class CaptureHelper {
 
     private static framerates: { [key: string]: number } = {
         stage: 20, // StageShow
-        server: 10, // 30 // OutputShow
+        server: 30, // OutputShow; the socket's ack gate is the real limiter
         webrtc: 30, // WebRTC (canvas stream, up to 30 fps)
         rtmp: 30, // RTMP
+        recorder: 30, // Output recording
         unconnected: 1,
         connected: 30 // NDI
     }
     static customFramerates: { [key: string]: { [key: string]: number } } = {}
 
-    static getDefaultCapture(window: BrowserWindow, id: string): CaptureOptions {
-        const screen: Display = this.getWindowScreen(window)
+    // the highest rate the frame-rate setting in Outputs.svelte offers
+    static readonly MAX_CONFIGURABLE_FPS = 60
 
-        const defaultFramerates = {
+    // the configured rate, regardless of connected receivers (for consumers like a preview)
+    static configuredFramerate(id: string): number {
+        const custom = this.customFramerates[id]
+        const configured = Number(custom?.ndi || custom?.omt || custom?.blackmagic || 0)
+        return configured > 0 ? configured : this.framerates.connected
+    }
+
+
+
+    static defaultFramerates(): { [key: string]: number } {
+        return {
             ndi: this.framerates.connected,
+            omt: this.framerates.connected,
             blackmagic: this.framerates.unconnected,
             server: this.framerates.server,
             stage: this.framerates.stage,
             webrtc: this.framerates.webrtc,
-            rtmp: this.framerates.rtmp
+            rtmp: this.framerates.rtmp,
+            recorder: this.framerates.recorder
         }
+    }
+
+    static getDefaultCapture(window: BrowserWindow, id: string): CaptureOptions {
+        const defaultFramerates = this.defaultFramerates()
 
         return {
             window,
             frameSubscription: null,
-            displayFrequency: screen.displayFrequency || 60,
-            options: { ndi: false, blackmagic: false, server: false, stage: false, webrtc: false, rtmp: false },
+            options: { ndi: false, omt: false, blackmagic: false, server: false, stage: false, webrtc: false, rtmp: false, recorder: false },
             framerates: defaultFramerates,
             id
         }
@@ -49,11 +68,13 @@ export class CaptureHelper {
     static getMaxActiveFramerate(framerates: { [key: string]: number }, activeOptions: { [key: string]: boolean }): number {
         const activeRates: number[] = []
         if (activeOptions.ndi) activeRates.push(framerates.ndi || 1)
+        if (activeOptions.omt) activeRates.push(framerates.omt || 1)
         if (activeOptions.blackmagic) activeRates.push(framerates.blackmagic || 1)
         if (activeOptions.server) activeRates.push(framerates.server || 1)
         if (activeOptions.stage) activeRates.push(framerates.stage || 1)
         if (activeOptions.webrtc) activeRates.push(framerates.webrtc || 1)
         if (activeOptions.rtmp) activeRates.push(framerates.rtmp || 1)
+        if (activeOptions.recorder) activeRates.push(framerates.recorder || 30)
         return activeRates.length > 0 ? Math.max(...activeRates) : 1
     }
 
@@ -72,6 +93,56 @@ export class CaptureHelper {
                 CaptureTransmitter.startChannel(id, "ndi")
             }
         }
+
+        if (OmtSender.OMT[id]) {
+            let omtFramerate = this.framerates.unconnected
+            if (OmtSender.OMT[id].status === "connected") omtFramerate = this.customFramerates[id]?.omt || this.framerates.connected
+
+            if (captureOptions.framerates.omt !== parseInt(omtFramerate.toString(), 10)) {
+                output.captureOptions!.framerates.omt = parseInt(omtFramerate.toString(), 10)
+                OutputHelper.setOutput(id, output)
+                CaptureTransmitter.startChannel(id, "omt")
+            }
+        }
+
+        // GPU budget: rendering several 4K OSR surfaces at 60fps saturates the GPU and balloons every
+        // readback (~20ms -> ~100ms) -> the received output only gets a few NEW frames/sec. So render each OSR
+        // output at the rate it actually needs: full rate when a receiver is connected, a low rate when not.
+        // Reacts within CONNECTION_POLL_INTERVAL_MS (250ms), so a connecting output ramps to 60 quickly.
+        // a shared page renders at the max rate any of its members needs
+        this.updateRenderRate(RenderGroups.rendererOf(id))
+    }
+
+    static updateRenderRate(rendererId: string) {
+        const output = OutputHelper.getOutput(rendererId)
+        const win = OutputHelper.renderWindow(output)
+        if (!output?.osr || !win || win.isDestroyed()) return
+        // a follower's own page idles at 1fps, ready for when its content diverges
+        if (RenderGroups.isFollower(rendererId)) {
+            try {
+                win.webContents.setFrameRate(1)
+            } catch {
+                // ignore
+            }
+            OutputHelper.Lifecycle.updateOsrPaintDrive(win, rendererId, 1)
+            return
+        }
+
+        let fps = 0
+        for (const m of RenderGroups.members(rendererId)) {
+            fps = Math.max(fps, OutputHelper.Lifecycle.presentFps(m), OutputHelper.Lifecycle.previewFps(m))
+            const mo = OutputHelper.getOutput(m)
+            if (mo?.captureOptions) fps = Math.max(fps, this.getMaxActiveFramerate(mo.captureOptions.framerates || {}, mo.captureOptions.options || {}))
+        }
+        // render at the rate the fastest member needs; anything faster is discarded at admission
+        const target = Math.min(OutputHelper.Lifecycle.OSR_RENDER_FPS, Math.max(1, Math.round(fps || 1)))
+        try {
+            win.webContents.setFrameRate(target)
+        } catch {
+            // ignore
+        }
+        // Linux begin-frame drive (no-op elsewhere): keep its cadence in lockstep with the applied rate
+        OutputHelper.Lifecycle.updateOsrPaintDrive(win, rendererId, target)
     }
 
     static getWindowScreen(window: BrowserWindow) {
@@ -83,7 +154,9 @@ export class CaptureHelper {
         })
     }
 
+    // fallback for an output nothing is capturing
     static async captureBase64Frame(window: BrowserWindow) {
+        ruleViolation("main-frame", "controller thumbnail capturePage")
         return (await window.capturePage()).toDataURL({ scaleFactor: 0.5 })
     }
 

@@ -2,21 +2,18 @@ appId: app.freeshow
 productName: FreeShow
 artifactName: FreeShow-${version}-${arch}.${ext}
 
-# WIDEVINE
-# Use castlabs electron builds to get widevine support
-# electronDownload:
-#     mirror: https://github.com/castlabs/electron-releases/releases/download/
-
 files:
     - build/electron/**
     - build/types/**
     - public/**
     - "!node_modules/@napi-rs"
-    - "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,test,tests}"
+    - "!**/node_modules/*/{CHANGELOG*,README*,test*,example*,docs}"
     - "!**/node_modules/*/{*.d.ts,*.ts,*.map}"
     - "!**/node_modules/{@types,typescript}/**"
-    - "!**/node_modules/**/*.pdb"
-    - "!**/node_modules/**/obj/**"
+    - "!**/node_modules/**/*.{pdb,iobj,ipdb,obj,lib,exp,a,o,c,cc,cpp,h,hpp,gyp*,vcxproj*,filters,sln}"
+    - "!**/node_modules/**/prebuild/node-v*"
+    - "!**/node_modules/grandiose/ndi/**"
+    - "!**/node_modules/osr-capture/**/on12_harness.exe"
 
 extraResources:
     - from: node_modules/slideshow/
@@ -29,9 +26,14 @@ extraResources:
 win:
     target: NSIS
     icon: build/public/icon.png
+    files:
+        - "!**/node_modules/openmediatransport/lib/{macos,linux-*,win-arm64}/**"
+        - "!**/node_modules/better-sqlite3/prebuilds/{darwin-*,linux*,win32-arm64}.node"
     asarUnpack:
         - "**/node_modules/macadam/**/*.node"
         - "**/node_modules/libspotifyctl/**/*"
+        - "**/node_modules/openmediatransport/**"
+        - "**/node_modules/sherpa-onnx-*/**"
     azureSignOptions:
         publisherName: Live Church Solutions
         endpoint: https://wus2.codesigning.azure.net/
@@ -41,10 +43,15 @@ win:
 # linux
 
 linux:
+    files:
+        - "!**/node_modules/openmediatransport/lib/{macos,win-*}/**"
+        - "!**/node_modules/better-sqlite3/prebuilds/{darwin-*,linuxmusl-*,win32-*}.node"
     asarUnpack:
         - "**/node_modules/grandiose/**"
+        - "**/node_modules/openmediatransport/**"
         - "**/node_modules/macadam/**/*.node"
         - "**/node_modules/libltc-wrapper/**/*"
+        - "**/node_modules/sherpa-onnx-*/**"
     category: AudioVideo
     target:
         - AppImage
@@ -57,13 +64,20 @@ deb:
         - libfontconfig1
         - uuid-runtime
         - libltc11
+        - libavahi-client3
+        - avahi-daemon
 
 # macos
 
 mac:
     icon: build/public/icon.png
+    files:
+        - "!**/node_modules/openmediatransport/lib/{linux-*,win-*}/**"
+        - "!**/node_modules/better-sqlite3/prebuilds/{linux*,win32-*}.node"
     asarUnpack:
         - "**/node_modules/macadam/**/*.node"
+        - "**/node_modules/openmediatransport/**"
+        - "**/node_modules/sherpa-onnx-*/**"
     target:
         - target: dmg
           arch:
@@ -82,9 +96,11 @@ mac:
     extendInfo:
         NSMicrophoneUsageDescription: Please give access to your microphone if you want to use it for input.
         NSCameraUsageDescription: Please give access to your camera if you want to use it for input.
+        NSAudioCaptureUsageDescription: Please give access to audio capture for desktop capture.
         com.apple.security.device.audio-input: true
         com.apple.security.device.camera: true
 
+afterExtract: scripts/opus.js
 afterSign: scripts/macos/notarize.js
 
 dmg:

@@ -1,16 +1,15 @@
 <script lang="ts">
     import { fade } from "svelte/transition"
-    import { uid } from "uid"
-    import type { StageItem } from "../../../types/Stage"
-    import { activeEdit, activePage, activePopup, activeStage, dictionary, selected, stageShows } from "../../stores"
+    import AiGenerate from "../../ai/components/floating/AiGenerate.svelte"
+    import { activeEdit, activePage, activePopup, activeStage, ai, dictionary, selected, stageShows } from "../../stores"
     import { translateText } from "../../utils/language"
     import Icon from "../helpers/Icon.svelte"
     import { getDynamicIds, replaceDynamicValues } from "../helpers/showActions"
     import T from "../helpers/T.svelte"
     import FloatingInputs from "../input/FloatingInputs.svelte"
     import MaterialButton from "../inputs/MaterialButton.svelte"
-    import { getLikelyPosition } from "./scripts/autoPosition"
-    import { addItem, updateSortedStageItems } from "./scripts/itemHelpers"
+    import { addStageItem } from "../stage/stage"
+    import { addItem } from "./scripts/itemHelpers"
     import { slideItems, stageItems } from "./values/items"
 
     export let isLocked = false
@@ -48,9 +47,9 @@
 
                 // Stage textbox quick add dynamic values - we can't have all values anyway, this would just be some common ones
                 if (item.id === "dynamic_values") {
-                    const excludeValues = ["time_", "exif_", "audio_", "meta_", "slide_text_", "show_text_full", "slide_group_color", "slide_group_next_color", "slide_group_upcoming_color", "interaction_", "timer_m", "timer_s"]
+                    const excludeValues = ["time_", "exif_", "audio_", "meta_", "slide_text_", "show_text_full", "slide_group_text", "slide_group_color", "slide_group_next_color", "slide_group_upcoming_color", "interaction_", "timer_m", "timer_s"]
                     const ref = { type: "stage" }
-                    const children = getDynamicIds()
+                    const children = getDynamicIds(false, "dropdown")
                         .filter((id) => !excludeValues.find((v) => id.includes(v)))
                         .map((id) => {
                             const dynamicId = `{${id}}`
@@ -70,56 +69,6 @@
             })
         }
     })
-
-    const resolution = { width: 1920, height: 1080 }
-    const halfWidth = resolution.width * 0.5
-    const halfHeight = resolution.height * 0.5
-    const DEFAULT_STYLE = `width: ${halfWidth}px;height: ${halfHeight}px;left: ${halfWidth * 0.5}px;top: ${halfHeight * 0.5}px;`
-    const smallItems = ["timer", "clock", "slide_tracker"]
-
-    function addStageItem(itemType: string, textValue = "") {
-        if (!stageId) return
-
-        let itemId = uid(5)
-        stageShows.update((a) => {
-            if (!a[stageId]?.items) return a
-
-            let style = DEFAULT_STYLE
-            if (smallItems.includes(itemType) || textValue) {
-                const width = resolution.width * 0.45
-                const left = halfWidth - width * 0.5
-                const height = 150
-                const top = halfHeight - height * 0.5
-                style = `width: ${width}px;height: ${height}px;left: ${left}px;top: ${top}px;`
-            }
-
-            if (Object.keys(a[stageId]?.items).length > 0) {
-                style = getLikelyPosition(Object.values(a[stageId].items), style)
-            }
-
-            let item: StageItem = { type: itemType as any, style, align: "" }
-
-            if (itemType === "text") item.lines = [{ align: "", text: [{ style: "", value: textValue || "" }] }]
-            else if (itemType === "slide_text") {
-                const slideTextItems = Object.values(a[stageId].items || {}).filter((a) => a.type === "slide_text")
-                item.slideOffset = slideTextItems.length
-                item.style += "font-size: 800px;"
-            }
-
-            a[stageId].items[itemId] = item
-            a[stageId].modified = Date.now()
-            return a
-        })
-
-        updateSortedStageItems()
-
-        if (Object.keys($stageShows[stageId]?.items || {}).length > 1) {
-            activeStage.update((a) => {
-                a.items = [itemId]
-                return a
-            })
-        }
-    }
 
     function handleAdd(type: any) {
         isOpen = false
@@ -211,7 +160,7 @@
                                 }, 150)
                             }}
                         >
-                            <MaterialButton class="add-item-button" variant={item.children ? "text" : "outlined"} on:click={() => (item.children && item.id !== "dynamic_values" ? null : handleAdd(item.id))} title={item.title || item.label} white={!isFirst}>
+                            <MaterialButton class="add-item-button" variant={item.children ? "text" : "outlined"} on:click={() => (item.children ? null : handleAdd(item.id))} title={item.title || item.label} white={!isFirst}>
                                 <Icon id={item.icon} size={1.2} white={!isFirst} />
                                 <T id={item.label} />{item.suffix || ""}
                             </MaterialButton>
@@ -250,6 +199,11 @@
             <Icon id="add" size={1.5} style={isOpen ? "transform: rotate(135deg);" : ""} white />
         </MaterialButton>
     </FloatingInputs>
+
+    <!-- Centered Generate Button -->
+    {#if $ai?.enabled && !isStage}
+        <AiGenerate />
+    {/if}
 {/if}
 
 <style>
@@ -331,7 +285,8 @@
     .submenu {
         position: absolute;
         right: calc(100% + 4px);
-        width: 260px;
+        min-width: 160px;
+        max-width: 260px;
         z-index: 1000;
 
         /* backdrop blur does not work for this apparently */

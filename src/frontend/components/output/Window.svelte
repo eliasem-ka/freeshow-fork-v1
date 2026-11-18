@@ -1,46 +1,69 @@
 <script lang="ts">
-    import { createEventDispatcher, onDestroy, onMount } from "svelte"
+    import { createEventDispatcher, onDestroy } from "svelte"
 
     export let id: string
 
     let videoElem: HTMLVideoElement | undefined
+    let currentStream: MediaStream | null = null
+    let destroyed = false
+    let currentCaptureId = ""
 
-    let constraints: any = {
-        video: {
-            // https://developer.mozilla.org/en-US/docs/Web/API/MediaTrackSettings/cursor
-            // hiding the cursor is not yet supported
-            // cursor: "never",
-            mandatory: {
-                chromeMediaSource: "desktop",
-                chromeMediaSourceId: id,
-                maxWidth: 1920,
-                maxHeight: 1080,
-                // maxAspectRatio: 16/9,
-                maxFrameRate: 60
-            }
+    function stopCurrentStream() {
+        if (currentStream) {
+            currentStream.getTracks().forEach((track) => track.stop())
+            currentStream = null
+        }
+        if (videoElem) {
+            videoElem.srcObject = null
         }
     }
 
-    onMount(() => {
+    function captureScreen(captureId: string) {
+        if (!captureId || destroyed || !videoElem) return
+
+        stopCurrentStream()
+        currentCaptureId = captureId
+
+        const constraints: any = {
+            video: {
+                // https://developer.mozilla.org/en-US/docs/Web/API/MediaTrackSettings/cursor
+                // hiding the cursor is not yet supported
+                // cursor: "never",
+                mandatory: {
+                    chromeMediaSource: "desktop",
+                    chromeMediaSourceId: captureId,
+                    maxWidth: 1920,
+                    maxHeight: 1080,
+                    // maxAspectRatio: 16/9,
+                    maxFrameRate: 60
+                }
+            }
+        }
+
         navigator.mediaDevices
             .getUserMedia(constraints)
             .then((stream) => {
-                if (!videoElem) return
+                if (destroyed || !videoElem || currentCaptureId !== captureId) {
+                    return stream.getTracks().forEach((track) => track.stop())
+                }
 
+                currentStream = stream
                 videoElem.srcObject = stream
                 videoElem.onloadedmetadata = loaded
             })
             .catch((err) => {
                 console.error(err.name + ": " + err.message)
             })
-    })
-
-    onDestroy(stopStream)
-    function stopStream() {
-        if (!videoElem) return
-        ;(videoElem.srcObject as MediaStream)?.getTracks()?.forEach((track) => track.stop())
-        videoElem.srcObject = null
     }
+
+    $: if (id && videoElem && id !== currentCaptureId) {
+        captureScreen(id)
+    }
+
+    onDestroy(() => {
+        destroyed = true
+        stopCurrentStream()
+    })
 
     let dispatch = createEventDispatcher()
     function loaded() {
@@ -53,6 +76,6 @@
     }
 </script>
 
-<video bind:this={videoElem} class={$$props.class} style={$$props.style}>
+<video bind:this={videoElem} class={$$props.class} data-source={id} style={$$props.style}>
     <track kind="captions" />
 </video>

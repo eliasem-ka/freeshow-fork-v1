@@ -4,9 +4,19 @@ import { join } from "path"
 import { ToMain } from "../../types/IPC/ToMain"
 import { sendToMain } from "../IPC/main"
 import { deleteFile, doesPathExist, getDataFolderPath, openInSystem, writeFile } from "../utils/files"
+import { IcecastSender } from "./IcecastSender"
 
 const fileNameText = "NowPlaying.txt"
 const fileNameImage = "NowPlayingCover.png"
+
+function getNowPlayingTextPath() {
+    const audioFolder = getDataFolderPath("audio")
+    return join(audioFolder, fileNameText)
+}
+export function getNowPlayingMediaPath() {
+    const audioFolder = getDataFolderPath("audio")
+    return join(audioFolder, fileNameImage)
+}
 
 type NowPlayingData = {
     filePath: string
@@ -18,16 +28,17 @@ type NowPlayingData = {
 
 // let currentContent = ""
 export async function setPlayingState(data: NowPlayingData) {
-    const audioFolder = getDataFolderPath("audio")
-
     // get metadata
     const metadata = await getAudioMetadata(data.filePath)
-    // const artist = (metadata ? getArtist(metadata) : "") || data.unknownLang[0] || "Unknown Artist"
-    // const title = metadata?.title || data.name || data.unknownLang[1] || "Unknown Title"
-    // const album = metadata?.album || data.unknownLang[2] || "Unknown Album"
+
+    // send metadata to Icecast stream
+    const artist = (metadata ? getArtist(metadata) : "") || data.unknownLang[0] || "Unknown Artist"
+    const title = metadata?.title || data.name || data.unknownLang[1] || "Unknown Title"
+    const songName = artist && title ? `${artist} - ${title}` : title || artist
+    IcecastSender.updateMetadata(songName)
 
     // create album art cover BEFORE converting dynamic values
-    const filePathCover = join(audioFolder, fileNameImage)
+    const filePathCover = getNowPlayingMediaPath()
     const cover = metadata?.picture?.[0]
     const buffer = cover?.data
     let coverBuffer: Buffer | undefined
@@ -54,7 +65,7 @@ export async function setPlayingState(data: NowPlayingData) {
     // currentContent = content
 
     // create playing data text file
-    const filePath = join(audioFolder, fileNameText)
+    const filePath = getNowPlayingTextPath()
     writeFile(filePath, content)
 
     // (no point in this at the moment)
@@ -85,8 +96,7 @@ async function convertDynamicValues(data: NowPlayingData, metadata: ICommonTagsR
                 return metadata?.year?.toString() || "Unknown Year"
             case "{artwork_path}":
             case "{artwork_base64}":
-                const audioFolder = getDataFolderPath("audio")
-                const coverFilePath = join(audioFolder, fileNameImage)
+                const coverFilePath = getNowPlayingMediaPath()
                 if (value === "{artwork_path}") return coverFilePath
 
                 if (!coverBuffer) return ""
@@ -109,26 +119,26 @@ async function convertDynamicValues(data: NowPlayingData, metadata: ICommonTagsR
 
 // same as frontend function
 function getArtist(metadata: ICommonTagsResult) {
-    const artists = [metadata.originalartist, metadata.artist, metadata.albumartist, ...(metadata.artists || [])].filter(Boolean)
-    return [...new Set(artists)].join(", ")
+    if (!metadata) return ""
+    const list = (metadata.artists?.length ? metadata.artists : [metadata.artist || metadata.albumartist || metadata.originalartist]).filter((a): a is string => Boolean(a))
+    return [...new Set(list.map((a) => a.trim()).filter(Boolean))].join(", ")
 }
 
 // remove now playing when not playing
 export function unsetPlayingAudio() {
-    const audioFolder = getDataFolderPath("audio")
+    IcecastSender.updateMetadata("")
 
-    const filePath = join(audioFolder, fileNameText)
+    const filePath = getNowPlayingTextPath()
     writeFile(filePath, "")
 
-    const filePathCover = join(audioFolder, fileNameImage)
+    const filePathCover = getNowPlayingMediaPath()
     if (doesPathExist(filePathCover)) {
         deleteFile(filePathCover)
     }
 }
 
 export function openNowPlaying() {
-    const audioFolder = getDataFolderPath("audio")
-    const filePath = join(audioFolder, fileNameText)
+    const filePath = getNowPlayingTextPath()
     openInSystem(filePath)
 }
 

@@ -24,7 +24,7 @@
 @font-face {
     font-family: NotoColorEmojiLimited;
     unicode-range: U+1F1E6-1F1FF;
-    src: url("https://raw.githack.com/googlefonts/noto-emoji/main/fonts/NotoColorEmoji.ttf");
+    src: url("https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/2D/fonts/NotoColorEmoji-flagsonly.ttf");
 }
 
 :root {
@@ -86,6 +86,13 @@ body {
     font-size: var(--font-size);
 }
 
+/* persistent resizing cursor */
+body[data-resizing],
+body[data-resizing] * {
+    cursor: var(--resizing-cursor) !important;
+    user-select: none !important;
+}
+
 /* scroll bar */
 ::-webkit-scrollbar {
     width: 8px;
@@ -109,6 +116,10 @@ body {
 /* selection */
 ::selection {
     background-color: var(--secondary-opacity);
+}
+
+body.unfocused ::selection {
+    background-color: rgb(128 128 128 / 0.4);
 }
 
 h1,

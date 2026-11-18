@@ -8,15 +8,15 @@ import { history } from "../components/helpers/history"
 import { getExtension, getFileName, getMediaType, removeExtension } from "../components/helpers/media"
 import { checkName } from "../components/helpers/show"
 import { sendMain } from "../IPC/main"
-import { actions as actionsStores, activePage, activePopup, activeProject, activeShow, alertMessage, editingProjectTemplate, effects as effectsStores, focusMode, folders, media as mediaStores, overlays as overlayStores, projects, projectTemplates, projectView, recentFiles } from "../stores"
+import { actions as actionsStores, activePage, activePopup, activeProject, activeShow, alertMessage, categories as categoriesStore, editingProjectTemplate, effects as effectsStores, focusMode, folders, media as mediaStores, overlays as overlayStores, projects, projectTemplates, projectView, recentFiles, variables as variablesStore } from "../stores"
+import { newToast } from "../utils/common"
 import { translateText } from "../utils/language"
 import { confirmCustom } from "../utils/popup"
 import { audioExtensions, mediaExtensions } from "../values/extensions"
-import { newToast } from "../utils/common"
 
 export function importProject(files: { content: string; path?: string; name?: string; extension?: string }[]) {
     files.forEach(({ content, path }) => {
-        const { project, parentFolder, shows, overlays, effects, actions, media } = JSON.parse(content)
+        const { project, parentFolder, shows, overlays, effects, actions, media, categories, variables } = JSON.parse(content)
         if (!project) return
 
         // find any parent folder with the same name as previous parent, or place at root
@@ -24,6 +24,16 @@ export function importProject(files: { content: string; path?: string; name?: st
         const projectId = project.id || ""
         delete project.id
         if (path) project.sourcePath = path
+
+        // create any missing categories
+        if (categories) {
+            categoriesStore.update((a) => {
+                Object.entries(categories).forEach(([id, cat]: any) => {
+                    if (!a[id]) a[id] = { name: cat.name, icon: cat.icon ?? null }
+                })
+                return a
+            })
+        }
 
         // add overlays
         if (overlays) {
@@ -58,6 +68,16 @@ export function importProject(files: { content: string; path?: string; name?: st
             })
         }
 
+        // add variables
+        if (variables) {
+            variablesStore.update((a) => {
+                Object.entries(variables).forEach(([id, variable]: any) => {
+                    a[id] = variable
+                })
+                return a
+            })
+        }
+
         // get media data
         if (media) {
             mediaStores.update((a) => {
@@ -78,6 +98,7 @@ export function importProject(files: { content: string; path?: string; name?: st
         history({ id: "SHOWS", newData: { data: newShows, projectImport: true } })
 
         // create project
+        project.used = Date.now()
         history({ id: "UPDATE", newData: { data: project }, oldData: { id: projectId }, location: { page: "show", id: "project" } })
     })
 
@@ -224,7 +245,7 @@ export async function updateRecentlyAddedFiles(paths: string[] | null = null) {
     sendMain(Main.IMPORT_FILES, { id: "freeshow_project", paths: [projectFile.path] })
 }
 
-export function markItemsAsPlayed(indexes: number[] | "active", customNewState?: boolean | undefined) {
+export function markItemsAsPlayed(indexes: number[] | "active" | "all", customNewState?: boolean | undefined) {
     const projectId = get(activeProject)
     if (!projectId) return
 
@@ -232,6 +253,8 @@ export function markItemsAsPlayed(indexes: number[] | "active", customNewState?:
         const activeShowIndex = get(activeShow)?.index
         if (activeShowIndex === undefined) return
         indexes = [activeShowIndex]
+    } else if (indexes === "all") {
+        indexes = (get(projects)[projectId]?.shows || []).map((_, i) => i)
     }
 
     projects.update((a) => {

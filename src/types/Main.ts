@@ -8,8 +8,19 @@ export interface Config {
     bounds: Electron.Rectangle
     dataPath: string | null
     disableHardwareAcceleration: boolean | null
+    graphicsDevice: string | null
+    /** last GPU problem reported, so it is not repeated every launch */
+    gpuHealthNotice?: string
     autoErrorReporting?: boolean
     mediaFolderPath?: string
+
+    // ChurchApps API URLs and credentials
+    churchAppsApiUrl?: string
+    churchAppsAppUrl?: string
+    churchAppsContentUrl?: string
+    churchAppsLessonsUrl?: string
+    churchAppsClientId?: string
+    churchAppsClientSecret?: string
 }
 
 export interface OS {
@@ -97,6 +108,8 @@ export type SelectIds =
     | "effect"
     | "screen"
     | "ndi"
+    | "omt"
+    | "blackmagic"
     | "camera"
     | "microphone"
     | "player"
@@ -104,6 +117,8 @@ export type SelectIds =
     | "timer"
     | "global_timer"
     | "variable"
+    | "scene"
+    | "scene_overlay"
     | "interaction"
     | "audio_stream"
     | "chord"
@@ -112,8 +127,10 @@ export type SelectIds =
     | "style"
     | "output"
     | "profile"
+    | "audio_channel"
     | "tag"
     | "bible_book"
+    | "calendar"
 
 export interface Selected {
     id: null | SelectIds
@@ -158,7 +175,7 @@ export interface MediaOptions {
 
 export interface ActiveEdit {
     // id?: string
-    type?: "show" | "media" | "camera" | "overlay" | "template" | "effect" | "audio"
+    type?: "show" | "media" | "camera" | "overlay" | "template" | "effect" | "audio" | "scene"
     id?: string
     slide?: null | number
     items: number[]
@@ -202,11 +219,20 @@ export interface MediaStyle {
     licenseExpiresAt?: number // unix ms; content provider license is valid while Date.now() < licenseExpiresAt
     pingbackUrl?: string // URL for sending pingback after playback
     cropping?: Partial<Cropping>
+    style?: string // used to transfer styles from main item to cropped part (like border radius)
 
     ignoreLayer?: boolean // foreground background type
 }
 
 export type AudioType = "music" | "effect"
+
+// media codec
+export interface MediaCodecInfo {
+    path: string
+    codecs: string[]
+    mimeType: string
+    mimeCodec: string
+}
 
 // subtitles/captions
 export interface Subtitle {
@@ -271,7 +297,7 @@ export interface Variable {
     animateTowardsResult?: boolean
     animationDuration?: number
     eachNumberOnce?: boolean
-    sets?: { name: string; minValue?: number; maxValue?: number }[]
+    sets?: { name: string; minValue?: number; maxValue?: number; disabled?: boolean }[]
     setName?: string // chosen random set
     setLog?: { name: string; number: string }[]
 
@@ -297,6 +323,8 @@ type Options = {
     randomNames?: boolean // default = false
     allAtOnce?: boolean // default = false
     maxTime?: number // seconds, default = no limit
+    timeUntilNext?: number // seconds, default = 0 (manual)
+    maxTimeAnswer?: number // seconds, default = 0 (manual)
     scoreSystem?: "incremental" | "falloff" | "speed" // default = "incremental"
     scorePoints?: number // default for incremental = 1, falloff = 10, speed = 100
 }
@@ -375,17 +403,18 @@ export type Popups =
     | "confirm"
     | "custom_text"
     | "import"
-    | "songbeamer_import"
     | "export"
     | "show"
     | "delete_show"
     | "select_show"
     | "select_template"
     | "select_style"
+    | "select_overlay"
     | "select_stage_layout"
     | "delete_duplicated_shows"
     | "icon"
     | "manage_groups"
+    | "manage_fonts"
     | "manage_icons"
     | "manage_colors"
     | "manage_metadata"
@@ -401,6 +430,8 @@ export type Popups =
     | "variable"
     | "interaction_input"
     | "audio_stream"
+    | "audio_effect"
+    | "add_audio_effect"
     | "now_playing"
     | "aspect_ratio"
     | "max_lines"
@@ -408,12 +439,13 @@ export type Popups =
     | "media_fit"
     | "metadata_display"
     | "import_scripture"
+    | "import_calendar"
     | "create_collection"
     | "edit_event"
     | "edit_chart"
     | "choose_chord"
     | "choose_screen"
-    | "choose_camera"
+    | "choose_media_input"
     | "choose_output_input"
     | "choose_output_type"
     | "choose_style"
@@ -455,6 +487,9 @@ export type Popups =
     | "cleaning_utility"
     | "pco_picker"
     | "sync_folders"
+    | "node_options"
+    | "ai_model_manager"
+    | "ai_chat"
 
 export type DefaultProjectNames = "date" | "today" | "sunday" | "week" | "custom" | "blank"
 

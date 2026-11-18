@@ -1,13 +1,15 @@
 <script lang="ts">
     import { onDestroy, onMount } from "svelte"
     import type { Effect } from "../../../../types/Effects"
-    import { activeEdit, activePage, currentWindow, effects } from "../../../stores"
+    import { currentWindow, effects, hoveredEffectItem } from "../../../stores"
     import { clone, getChangedKeys } from "../../helpers/array"
     import { EffectRender } from "./effectRenderer"
 
-    export let effect: Effect & { id?: string }
+    export let effect: (Effect & { id?: string }) | undefined
     export let preview = false
     export let edit = false
+
+    $: if (renderer) renderer.highlightedIndex = edit ? $hoveredEffectItem : null
 
     let items: any[]
     $: items = effect?.items || [] // .filter((a) => !a.hidden)
@@ -26,7 +28,7 @@
         // return () => renderer.stop()
     })
 
-    $: style = `${effect.style};background: ${effect.background};opacity: ${effect.opacity ?? 1};`
+    $: style = `${effect?.style};background: ${effect?.background};opacity: ${effect?.opacity ?? 1};`
     $: if (style && canvasElem) canvasElem.style = style
 
     onDestroy(() => {
@@ -44,19 +46,15 @@
             previousItems.filter((a) => !a.hidden)
         )
 
-        if (!edit && $activePage === "edit" && $activeEdit.type === "effect") {
-            // item added or removed
-            if (items.length !== previousItems.length) {
-                renderer?.stop()
-                renderer = new EffectRender(canvasElem, items, preview)
-                previousItems = clone(items)
-            }
+        // item added, removed, reordered, or hidden
+        if (items.length !== previousItems.length || items.some((it, i) => it.type !== previousItems[i]?.type || it.hidden !== previousItems[i]?.hidden)) {
+            renderer?.stop()
+            renderer = new EffectRender(canvasElem, items, preview)
+            previousItems = clone(items)
             return
         }
 
         const changedKeys = _changedKeys.filter((a) => a.key !== "x" && a.key !== "y" && a.key !== "offset")
-
-        if (_changedKeys.length && !changedKeys.length && !$currentWindow) return
 
         previousItems = clone(items)
 
@@ -75,7 +73,7 @@
         movedIndex = -1
     }
 
-    const basicMove = ["circle", "rectangle", "triangle", "galaxy", "sun", "lens_flare", "spotlight", "neon", "asset"]
+    const basicMove = ["circle", "rectangle", "triangle", "galaxy", "sun", "lens_flare", "spotlight", "candle", "neon", "asset"]
     const verticalMove = ["aurora", "fog", "fireworks", "city", "grass", "rainbow"]
 
     function mousemove(e: any) {
@@ -92,7 +90,7 @@
         const y = Math.max(0, mouseY / parentSlide.clientHeight)
 
         effects.update((a) => {
-            const item: any = a[effect.id!].items[movedIndex]
+            const item: any = a[effect?.id || ""].items[movedIndex]
 
             if (basicMove.includes(item.type)) {
                 item.x = x
@@ -124,7 +122,8 @@
 
 <svelte:window on:mousemove={mousemove} on:mouseup={mouseup} />
 
-<canvas bind:this={canvasElem}></canvas>
+<!-- data-animated: keeps the page busy (MainOutput.svelte) -->
+<canvas bind:this={canvasElem} data-animated></canvas>
 
 <!-- move boxes -->
 {#if edit}

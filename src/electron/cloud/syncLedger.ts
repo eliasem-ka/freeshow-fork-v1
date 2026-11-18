@@ -1,10 +1,8 @@
 // ----- FreeShow -----
-// Pure, testable per-item merge ledger for SYNCED_SETTINGS / collections.
+// Pure per-item merge ledger for SYNCED_SETTINGS / collections.
 //
-// This extracts the created/deleted ledger decision logic from syncManager (see #3335) into a
-// self-contained unit with NO module globals and NO I/O: all state (changes, cloudChanges, the
-// current deviceId, device count) is provided to the constructor, so the merge decisions can be
-// unit-tested in isolation. syncManager delegates to this instead of keeping the logic inline.
+// Extracts merge logic from syncManager to be unit-testable in isolation.
+// All state is provided to constructor, with no module globals or I/O.
 
 export type Changes = {
     version: string
@@ -12,6 +10,9 @@ export type Changes = {
     modified: { [key: string]: number }
     deleted: { [key: string]: string[] }
     created: { [key: string]: string[] }
+    // Real last-edit time per full-file store (EVENTS/THEMES/MEDIA).
+    // Used instead of file mtime to avoid false "newest wins" entries caused by sync writes.
+    fileModified?: { [storeId: string]: number }
 }
 
 export type EntryAction = "create" | "download" | "upload" | "delete" | "skip"
@@ -28,6 +29,7 @@ export class SyncLedger {
     cloudChanges: Changes | null
     readonly deviceId: string
     readonly isNewDevice: boolean
+    localMergedIn = false
 
     // items deleted during THIS run; used so a same-run deletion isn't treated as "deleted locally"
     private deletedNow: string[] = []
@@ -108,11 +110,8 @@ export class SyncLedger {
 
     // ----- merge decisions (item-collections with no per-item "modified") -----
 
-    // Item present in the cloud snapshot; decide create/skip/delete/download/upload given whether it
-    // exists locally. Single source of truth for the cloud-side decision: syncManager.checkCloudEntry
-    // delegates here. When the item exists on both sides and the ledger doesn't force delete, the
-    // newest copy wins: entries that carry a per-item "modified" pass `cloudIsNewer` (shows, projects,
-    // stage, …); item-collections have no per-item "modified" and omit it → keep local (upload).
+    // Resolves cloud entry status (create/skip/delete/download/upload) based on local existence.
+    // Newest copy wins for items with "modified" fields; collections default to upload.
     resolveCloudEntry(storeId: string, key: string, localExists: boolean, cloudIsNewer = false): { action: EntryAction } {
         // exists only in cloud
         if (!localExists) {
@@ -143,15 +142,17 @@ export class SyncLedger {
         }
         if (this.isCreated(storeId, key)) this.markAsCreated(storeId, key)
 
-        // exists on both sides and not deleted → newest wins (collections pass cloudIsNewer=false → keep local)
+        // exists on both sides and not deleted → newest wins. Collections have no per-item "modified",
+        // so callers pass whether the cloud file as a whole is newer than the local one (see mergeCollection).
+        if (!cloudIsNewer) this.localMergedIn = true
         return { action: cloudIsNewer ? "download" : "upload" }
     }
 
-    // Item present only locally (not in the cloud snapshot).
-    // Single source of truth for the ledger decision: syncManager.checkLocalEntry delegates here.
+    // Item present only locally (not in cloud snapshot). Resolves actions based on deletion history.
     resolveLocalEntry(storeId: string, key: string): { action: EntryAction } {
         if (this.isNewDevice) {
             this.markAsCreated(storeId, key)
+            this.localMergedIn = true
             return { action: "upload" }
         }
 
@@ -159,6 +160,7 @@ export class SyncLedger {
             // this device had deleted it then restored it → revive
             if (this.isDeletedLocally(storeId, key)) {
                 this.markAsCreated(storeId, key)
+                this.localMergedIn = true
                 return { action: "upload" }
             }
             // someone else deleted it → propagate the deletion locally
@@ -168,19 +170,20 @@ export class SyncLedger {
 
         // brand-new local item → mark created so other devices download it
         this.markAsCreated(storeId, key)
+        this.localMergedIn = true
         return { action: "upload" }
     }
 
-    // Merge one item-collection (e.g. scriptures) per-item: applies the cloud entries onto the local
-    // object and resolves local-only items via the ledger. Returns the merged collection.
-    // This is the per-item replacement for the old whole-object overwrite that caused #3335.
-    mergeCollection(storeId: string, type: string, cloudObj: Record<string, any>, localObj: Record<string, any>): Record<string, any> {
+    // Merges one item-collection (e.g. scriptures) per-item. Used to avoid whole-object overwrites.
+    // cloudIsNewer resolves conflicts on items that exist on both sides (no per-item "modified" to
+    // compare, so this is the same whole-file newest-wins check the non-collection settings use).
+    mergeCollection(storeId: string, type: string, cloudObj: Record<string, any>, localObj: Record<string, any>, cloudIsNewer = false): Record<string, any> {
         const merged: Record<string, any> = { ...localObj }
 
         // items present in the cloud
         for (const [key, value] of Object.entries(cloudObj || {})) {
             const itemKey = `${type}/${key}`
-            const action = this.resolveCloudEntry(storeId, itemKey, key in merged).action
+            const action = this.resolveCloudEntry(storeId, itemKey, key in merged, cloudIsNewer).action
             if (action === "delete") delete merged[key]
             else if (action === "create" || action === "download") merged[key] = value
         }

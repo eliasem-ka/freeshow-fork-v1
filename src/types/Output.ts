@@ -1,5 +1,5 @@
 import type { Cropping, Resolution } from "./Settings"
-import type { OutBackground, OutSlide, OutTransition } from "./Show"
+import type { OutBackground, OutScene, OutSlide, OutTransition } from "./Show"
 
 export interface Outputs {
     [key: string]: Output
@@ -22,12 +22,14 @@ export interface Output {
     transparent?: boolean
     ndi?: boolean
     ndiData?: any
+    omt?: boolean
+    omtData?: any
     blackmagic?: boolean
     blackmagicData?: any
     webrtc?: boolean
-    webrtcData?: any
+    webrtcData?: { url?: string; token?: string; streaming?: boolean; startedAt?: number; fps?: string | number; bitrate?: string | number }
     rtmp?: boolean
-    rtmpData?: { url: string; key: string; streaming?: boolean }
+    rtmpData?: RtmpData
     forcedResolution?: Resolution
     invisible?: boolean
     taskbar?: boolean
@@ -36,13 +38,47 @@ export interface Output {
     out?: OutData
 }
 
+export interface SyncedOutputs {
+    [id: string]: string
+}
+
+// RTMP
+export interface RtmpDestination {
+    id: string
+    url: string
+    key: string
+    enabled: boolean
+    /** url is a file path: the encoded stream is recorded there instead of being sent */
+    file?: boolean
+}
+export interface RtmpData {
+    streaming?: boolean
+    startedAt?: number
+    fps?: string | number
+    bitrate?: string | number
+    rateControl?: "cbr" | "vbr"
+    encoder?: string
+    destinations?: RtmpDestination[]
+    url?: string // deprecated, only used in v1.6.4
+    key?: string // deprecated, only used in v1.6.4
+}
+export type RtmpDestinationState = "idle" | "connecting" | "live" | "reconnecting" | "error"
+export interface RtmpStatus {
+    /**
+     * `restarts`/`lastIssue` persist for the whole stream rather than clearing on recovery: a
+     * destination that keeps dropping and reconnecting reads as healthy from `state` alone.
+     */
+    [destinationId: string]: { state: RtmpDestinationState; error?: string; restarts?: number; lastIssue?: string }
+}
+
 export interface OutData {
-    refresh?: boolean
+    refresh?: number
     background?: null | OutBackground
     slide?: null | OutSlide
     effects?: string[]
     overlays?: string[]
     transition?: null | OutTransition
+    scene?: null | OutScene
 }
 
 export interface Animation {

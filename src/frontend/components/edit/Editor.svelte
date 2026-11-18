@@ -16,6 +16,7 @@
     import EffectEditor from "./editors/EffectEditor.svelte"
     import MediaEditor from "./editors/MediaEditor.svelte"
     import OverlayEditor from "./editors/OverlayEditor.svelte"
+    import SceneEditor from "./editors/SceneEditor.svelte"
     import SlideEditor from "./editors/SlideEditor.svelte"
     import TemplateEditor from "./editors/TemplateEditor.svelte"
     import ItemAddMenu from "./ItemAddMenu.svelte"
@@ -34,7 +35,7 @@
 
     // no need to add chords on scripture/events
     $: chordsHidden = !!currentShow?.reference?.type
-    $: chordsDisabled = !Slide || isLocked || !getSlideText(Slide)
+    $: chordsDisabled = !Slide || isLocked || (chordCount < 1 && !getSlideText(Slide))
 
     $: if ($editMode === "chords" && (chordsHidden || chordsDisabled)) editMode.set("default")
 
@@ -44,7 +45,7 @@
 
     // TODO: could add more tabs, like to edit slide layers (like background media)
     $: editTabs = {
-        default: { name: "example.default", icon: "slide" },
+        default: { name: "tools.slide", icon: "slide" }, // example.default
         ...(!chordsHidden && { chords: { name: "edit.chords", icon: "chords", data: chordCount > 0 ? chordCount : undefined, disabled: chordsDisabled } }),
         text_edit: { name: "show.text", tooltip: "show.text [Ctrl+Shift+T]", icon: "text_edit" }
     } as TabsObj
@@ -57,7 +58,8 @@
         }
 
         // mainly for overlay preview
-        if ($activeShow?.id && ($activeShow.type || "show") !== "show" && (!$activeEdit.id || $activeEdit.type === $activeShow.type)) {
+        const isOverlay = $activeShow?.type === "overlay" || $activeEdit?.type === "overlay"
+        if ($activeShow?.id && ($activeShow.type || "show") !== "show" && (!isOverlay ? !$activeEdit.id || $activeEdit.type === $activeShow.type : !$activeEdit.id)) {
             activeEdit.set({ id: $activeShow.id, type: $activeShow.type, items: [] } as any)
         }
     })
@@ -70,11 +72,13 @@
         {#if $activeEdit.type === "overlay"}
             <OverlayEditor />
 
-            <ItemAddMenu {isLocked} />
+            <ItemAddMenu />
         {:else if $activeEdit.type === "template"}
             <TemplateEditor />
 
-            <ItemAddMenu {isLocked} />
+            <ItemAddMenu />
+        {:else if $activeEdit.type === "scene"}
+            <SceneEditor />
         {:else if $activeEdit.type === "effect"}
             <EffectEditor />
 

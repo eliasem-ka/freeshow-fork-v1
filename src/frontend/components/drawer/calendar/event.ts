@@ -35,30 +35,39 @@ export function createRepeatedEvents(event: Event, onlyMissing = false, skipDate
     let currentFromDate = new Date(event.from)
     let currentToDate = new Date(event.to)
     let endingDate = new Date(data.endingDate || "")
-    endingDate = setDate(currentFromDate, { date: endingDate.getDate(), month: endingDate.getMonth(), year: endingDate.getFullYear() })
+    if (!isNaN(endingDate.getTime())) {
+        endingDate = setDate(endingDate, { hours: 23, minutes: 59, seconds: 59 })
+    }
 
     const isCalendarRepeat = ["1st", "2nd", "3rd", "4th", "last"].includes(data.type)
     const originalFromDate = new Date(event.from)
     const originalToDate = new Date(event.to)
+    const originalFromDay = originalFromDate.getDate()
+    const originalToDay = originalToDate.getDate()
     const durationMs = originalToDate.getTime() - originalFromDate.getTime()
     const weekday = originalFromDate.getDay()
 
     const increment = {
-        day: () => [currentFromDate.getDate() + Number(data.count), currentToDate.getDate() + Number(data.count)],
-        week: () => [currentFromDate.getDate() + 7 * Number(data.count), currentToDate.getDate() + 7 * Number(data.count)],
-        month: () => {
-            const newMonth: number[] = [currentFromDate.getMonth() + Number(data.count), currentToDate.getMonth() + Number(data.count)]
-            if (newMonth[0] > 11) {
-                currentFromDate = setDate(currentFromDate, { month: 0, year: currentFromDate.getFullYear() + 1 })
-                newMonth[0] = newMonth[0] - 12
-            }
-            if (newMonth[1] > 11) {
-                currentToDate = setDate(currentToDate, { month: 0, year: currentToDate.getFullYear() + 1 })
-                newMonth[1] = newMonth[1] - 12
-            }
-            return newMonth
+        day: () => {
+            currentFromDate.setDate(currentFromDate.getDate() + Number(data.count))
+            currentToDate.setDate(currentToDate.getDate() + Number(data.count))
         },
-        year: () => [currentFromDate.getFullYear() + Number(data.count), currentToDate.getFullYear() + Number(data.count)]
+        week: () => {
+            currentFromDate.setDate(currentFromDate.getDate() + 7 * Number(data.count))
+            currentToDate.setDate(currentToDate.getDate() + 7 * Number(data.count))
+        },
+        month: () => {
+            const count = Number(data.count)
+            const fromTotalMonths = currentFromDate.getFullYear() * 12 + currentFromDate.getMonth() + count
+            const toTotalMonths = currentToDate.getFullYear() * 12 + currentToDate.getMonth() + count
+            currentFromDate = setDate(currentFromDate, { year: Math.floor(fromTotalMonths / 12), month: fromTotalMonths % 12, date: originalFromDay })
+            currentToDate = setDate(currentToDate, { year: Math.floor(toTotalMonths / 12), month: toTotalMonths % 12, date: originalToDay })
+        },
+        year: () => {
+            const count = Number(data.count)
+            currentFromDate = setDate(currentFromDate, { year: currentFromDate.getFullYear() + count, date: originalFromDay })
+            currentToDate = setDate(currentToDate, { year: currentToDate.getFullYear() + count, date: originalToDay })
+        }
     }
 
     const advanceDates = () => {
@@ -73,15 +82,7 @@ export function createRepeatedEvents(event: Event, onlyMissing = false, skipDate
             currentFromDate = setDate(currentFromDate, { year: targetYear, month: targetMonth, date: targetDay })
             currentToDate = new Date(currentFromDate.getTime() + durationMs)
         } else {
-            const incremented = increment[data.type as keyof typeof increment]()
-
-            if (data.type === "day" || data.type === "week") {
-                currentFromDate.setDate(incremented[0])
-                currentToDate.setDate(incremented[1])
-            } else {
-                currentFromDate = setDate(currentFromDate, { [data.type]: incremented[0] })
-                currentToDate = setDate(currentToDate, { [data.type]: incremented[1] })
-            }
+            increment[data.type as keyof typeof increment]()
         }
     }
 
@@ -119,20 +120,26 @@ export function createRepeatedEvents(event: Event, onlyMissing = false, skipDate
     }
 
     // create events
+    const groupId = event.group || event.id || uid()
+    event.group = groupId
+
     let newEvents: any = {}
     if (!onlyMissing) newEvents = { [event.id || event.group || ""]: event }
 
     dates.forEach((date: string[]) => {
         const newEvent = clone(event)
 
+        delete newEvent.id
         newEvent.from = date[0]
         newEvent.to = date[1]
+        newEvent.group = groupId
+        if (event.origin) newEvent.origin = event.origin
 
         // find existing event at this date!
         let exists = false
         if (onlyMissing) {
             Object.values(get(events)).forEach((currentEvent) => {
-                if (currentEvent.group !== event.group) return
+                if (!currentEvent.group || currentEvent.group !== groupId) return
                 if (currentEvent.from !== newEvent.from || currentEvent.to !== newEvent.to) return
 
                 exists = true
@@ -149,9 +156,17 @@ export function createRepeatedEvents(event: Event, onlyMissing = false, skipDate
     history({ id: "UPDATE", newData: { data: newEvents, keys: Object.keys(newEvents) }, location: { page: "drawer", id: "event" } })
 }
 
-const setDate = (date: Date, options: any): Date => {
-    const newDate = [options.year ?? date.getFullYear(), (options.month ?? date.getMonth()) + 1, options.date ?? date.getDate()]
-    const time = date.getHours() + ":" + date.getMinutes()
+export const setDate = (date: Date, options: any): Date => {
+    const year = options.year ?? date.getFullYear()
+    const month = options.month ?? date.getMonth()
+    let day = options.date ?? date.getDate()
+    const maxDays = new Date(year, month + 1, 0).getDate()
+    if (day > maxDays) day = maxDays
+    const newDate = [year, month + 1, day]
+    const hours = options.hours ?? date.getHours()
+    const minutes = options.minutes ?? date.getMinutes()
+    const seconds = options.seconds ?? date.getSeconds()
+    const time = `${hours}:${minutes}:${seconds}`
     return new Date([...newDate, time].join(" "))
 }
 

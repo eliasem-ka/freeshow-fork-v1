@@ -1,6 +1,6 @@
 import type { BrowserWindow, Rectangle } from "electron"
 import { screen } from "electron"
-import { mainWindow, toApp } from "../.."
+import { isMac, mainWindow, toApp } from "../.."
 import { MAIN, OUTPUT } from "../../../types/Channels"
 import type { Output } from "../../../types/Output"
 import { OutputHelper } from "../OutputHelper"
@@ -8,19 +8,29 @@ import { setOutputAlwaysOnTop } from "./OutputAlwaysOnTop"
 import { OutputBounds } from "./OutputBounds"
 
 export class OutputVisibility {
-    static toggleOutputs(data: { outputs: (Output & { id: string })[]; state: boolean; force?: boolean; autoStartup?: boolean; autoPosition?: boolean }) {
+    static async toggleOutputs(data: { outputs: (Output & { id: string })[]; state: boolean; force?: boolean; autoStartup?: boolean; autoPosition?: boolean }) {
         const newStates: { id: string; active: boolean | "invisible" }[] = []
 
+        // list order decides stacking; offscreen outputs are created first (awaited) so displayed ones can join their render
+        const rendersOffscreen = (o: Output) => !!(o.ndi || o.omt || o.webrtc || o.rtmp || o.blackmagic || o.invisible)
+        const needsWindow = (o: Output & { id: string }) => {
+            const win = OutputHelper.getOutput(o.id)?.window
+            return !win || win.isDestroyed()
+        }
+        for (const output of data.outputs.filter(needsWindow).filter(rendersOffscreen)) {
+            await OutputHelper.Lifecycle.createOutput(output)
+        }
+
         data.outputs.forEach((output) => {
-            const force = !!(data.force || output.boundsLocked)
-            const newState = OutputVisibility.toggleOutput(output, data.state, force, data.autoStartup, data.autoPosition)
+            const autoPosition = output.boundsLocked ? false : data.autoPosition
+            const newState = OutputVisibility.toggleOutput(output, data.state, data.autoStartup, autoPosition, data.force)
             newStates.push({ id: output.id, active: newState })
         })
 
         toApp(OUTPUT, { channel: "OUTPUT_STATE", data: newStates })
     }
 
-    static toggleOutput(output: Output & { id: string }, state: boolean, force?: boolean, autoStartup?: boolean, autoPosition?: boolean) {
+    static toggleOutput(output: Output & { id: string }, state: boolean, autoStartup?: boolean, autoPosition?: boolean, force?: boolean) {
         if (!output?.id) return false
 
         let window: BrowserWindow = OutputHelper.getOutput(output.id)?.window
@@ -34,52 +44,88 @@ export class OutputVisibility {
         if (output.invisible) {
             OutputHelper.setOutput(output.id, { ...OutputHelper.getOutput(output.id), invisible: true })
             if (window.isVisible()) this.hideWindow(window)
+            // capture-only: render at the configured resolution (DPI-corrected)
+            OutputBounds.updateBounds({ id: output.id, bounds: output.bounds })
             return "invisible"
         }
 
-        let bounds: Rectangle = output.bounds
+        const displays = screen.getAllDisplays()
+        const isSingleScreenAutoStartup = autoStartup && displays.length <= 1
+        if (isSingleScreenAutoStartup) return false
 
-        // don't auto position on mac (because of virtual)
-        if (autoPosition && !force && process.platform !== "darwin") bounds = this.getSecondDisplay(bounds)
-        const windowNotCoveringMain = this.amountCovered(bounds, mainWindow!.getBounds()) < 0.5
+        const bounds: Rectangle = this.resolveOutputBounds(output, autoPosition)
 
-        if (state === true && (force || window.isAlwaysOnTop() === false || windowNotCoveringMain)) {
+        const checkIfCovering = !force && !output.boundsLocked
+        const windowCoveringMain = checkIfCovering ? this.amountCovered(bounds, this.getMainWindowBounds()) > 0.5 : false
+        const invalidWindowPosition = windowCoveringMain && (autoPosition || autoStartup || this.isAlwaysOnTop(window))
+
+        if (state === true && !invalidWindowPosition) {
             this.showWindow(window, output.alwaysOnTop !== false)
 
             OutputHelper.Bounds.updateBounds({ id: output.id, bounds })
             return true
         } else {
             this.hideWindow(window, output)
+            // returning to capture-only: render at the configured resolution (DPI-corrected)
+            OutputBounds.updateBounds({ id: output.id, bounds: output.bounds })
 
             if (state === true && !autoStartup) toApp(MAIN, { channel: "ALERT", data: "error.display" })
             return false
         }
     }
 
+    static resolveOutputBounds(output: Partial<Output> & { bounds: Rectangle; boundsLocked?: boolean; screen?: string | null }, autoPosition = false): Rectangle {
+        const displays = screen.getAllDisplays()
+        const primaryBounds = displays.length ? displays[0].bounds : { x: 0, y: 0, width: 1920, height: 1080 }
+        const hasValidBounds = !!(output.bounds?.width && output.bounds?.height)
+        const outputBounds = hasValidBounds ? output.bounds : primaryBounds
+
+        // never auto position locked bounds
+        if (output.boundsLocked) return outputBounds
+
+        // 1. Primary: Preserve valid coordinates if already within an active physical display
+        if (displays.length > 0 && hasValidBounds && output.bounds) {
+            const isCenterOnDisplay = displays.some((d) => {
+                const centerX = output.bounds.x + output.bounds.width / 2
+                const centerY = output.bounds.y + output.bounds.height / 2
+                return centerX >= d.bounds.x && centerX < d.bounds.x + d.bounds.width && centerY >= d.bounds.y && centerY < d.bounds.y + d.bounds.height
+            })
+
+            if (isCenterOnDisplay) return output.bounds
+        }
+
+        // 2. Secondary fallback: Look up by target display ID if coordinates are off-screen (e.g. topology changed)
+        if (displays.length > 0 && output.screen) {
+            const isCoveringMain = this.amountCovered(outputBounds, this.getMainWindowBounds()) > 0.5
+            const targetDisplay = isCoveringMain ? null : displays.find((d) => d.id.toString() === output.screen)
+            if (targetDisplay) return { ...targetDisplay.bounds }
+        }
+
+        // fallback to second display auto positioning if not locked and autoPosition requested or bounds are undefined
+        // (not on macOS due to window detection quirks)
+        if ((autoPosition || !hasValidBounds) && displays.length > 1 && !isMac) {
+            return this.getSecondDisplay(outputBounds)
+        }
+
+        return outputBounds
+    }
+
     static getSecondDisplay(bounds: Rectangle) {
         const displays = screen.getAllDisplays()
         if (displays.length !== 2) return bounds
 
-        const mainWindowBounds = mainWindow!.getBounds()
+        const mainWindowBounds = this.getMainWindowBounds()
         const amountCoveredByWindow = this.amountCovered(displays[1].bounds, mainWindowBounds)
 
         let secondDisplay = displays[1]
         if (amountCoveredByWindow > 0.5) secondDisplay = displays[0]
 
-        const newBounds = secondDisplay.bounds
-
-        // window zoomed (sometimes it's correct even with custom scaling, but not always)
-        // if windows overlap then something is wrong with the scaling
-        const scale = secondDisplay.scaleFactor || 1
-        if (scale !== 1 && this.amountCovered(displays[0].bounds, displays[1].bounds) > 0) {
-            newBounds.width /= scale
-            newBounds.height /= scale
-        }
-
-        return newBounds
+        return { ...secondDisplay.bounds }
     }
 
-    static amountCovered(displayBounds: Rectangle, windowBounds: Rectangle) {
+    static amountCovered(displayBounds: Rectangle, windowBounds: Rectangle | null) {
+        if (!windowBounds) return 0
+
         const overlapX = Math.max(0, Math.min(displayBounds.x + displayBounds.width, windowBounds.x + windowBounds.width) - Math.max(displayBounds.x, windowBounds.x))
         const overlapY = Math.max(0, Math.min(displayBounds.y + displayBounds.height, windowBounds.y + windowBounds.height) - Math.max(displayBounds.y, windowBounds.y))
         const overlapArea = overlapX * overlapY
@@ -88,6 +134,23 @@ export class OutputVisibility {
         const overlapAmount = overlapArea / totalArea
 
         return overlapAmount
+    }
+
+    private static getMainWindowBounds(): Rectangle | null {
+        try {
+            if (!mainWindow || mainWindow.isDestroyed()) return null
+            return mainWindow.getBounds()
+        } catch {
+            return null
+        }
+    }
+
+    private static isAlwaysOnTop(window: BrowserWindow): boolean {
+        try {
+            return !window.isDestroyed() && window.isAlwaysOnTop() === true
+        } catch {
+            return false
+        }
     }
 
     // MacOS Menu Bar

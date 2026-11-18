@@ -10,9 +10,11 @@
     import type { API_midi } from "../../actions/api"
     import { customActionActivations } from "../../actions/customActivation"
     import { convertOldMidiToNewAction, defaultMidiActionChannels, midiInListen } from "../../actions/midi"
+    import DragItemWrapper from "../../helpers/DragItemWrapper.svelte"
     import Icon from "../../helpers/Icon.svelte"
     import T from "../../helpers/T.svelte"
-    import { clone, keysToID, moveToPos, sortByName } from "../../helpers/array"
+    import { clone, keysToID, sortByName } from "../../helpers/array"
+    import { createDragReorder } from "../../helpers/dragReorder"
     import { history } from "../../helpers/history"
     import { convertImagePathToIcon } from "../../helpers/media"
     import { getLayoutRef, updateCachedShows } from "../../helpers/show"
@@ -155,6 +157,15 @@
         })
     }
 
+    const dragReorder = createDragReorder((fromIndices, toIndex) => {
+        action.triggers = dragReorder.getReorderedList(action.triggers, fromIndices, toIndex)
+        action = action
+    })
+    const { dragOverIndex, draggedIndices } = dragReorder
+
+    $: displayTriggers = dragReorder.getReorderedList<string>(action.triggers || [], $draggedIndices, $dragOverIndex)
+    $: isPlaceholderActive = $dragOverIndex !== null
+
     let autoActionName = ""
     function changeAction(e, index = -1) {
         let actionId = e.detail.id || ""
@@ -182,14 +193,6 @@
             return
         }
 
-        // move up action id
-        if (actionId === "move_up") {
-            if (index === undefined) return
-            action.triggers = moveToPos(action.triggers, index, index - 1)
-            action = action
-            return
-        }
-
         // remove action id
         if (actionId === "remove") {
             if (index === undefined) return
@@ -212,7 +215,7 @@
 
         // auto name (if empty or not changed by user)
         if ((action.name || "") === autoActionName && action.triggers.length === 1) {
-            autoActionName = translateText(actionData[e.detail.id]?.name || "") || e.detail.id
+            autoActionName = translateText(actionData[e.detail.id]?.name || "", null, actionData[e.detail.id]?.replace || []) || e.detail.id
             if (autoActionName) action.name = autoActionName
         }
 
@@ -336,8 +339,9 @@
     let addTrigger = false
 
     // set show when selected
-    $: if (action.triggers?.find((a) => a === "start_show") && $popupData.showId) {
-        let setShow = { id: "start_show", actionValue: { id: $popupData.showId } }
+    $: if (action.triggers?.find((a) => a === "start_show" || a === "id_select_show") && $popupData.showId) {
+        let triggerId = action.triggers?.find((a) => a === "start_show" || a === "id_select_show") || "id_select_show"
+        let setShow = { id: triggerId, actionValue: { id: $popupData.showId } }
         changeAction({ detail: setShow }, $popupData.actionIndex)
     }
 
@@ -526,10 +530,12 @@
 
             <!-- multiple actions -->
             <div class="actions">
-                {#each action.triggers as actionId, i}
-                    {#key actionId}
-                        <CreateAction mainId={id} {actionId} existingActions={action.triggers} actionValue={action.actionValues?.[actionId]} actionNameIndex={i + 1} on:change={(e) => changeAction(e, i)} on:choose={() => (actionSelector = { id: actionId, index: i })} {mode} choosePopup />
-                    {/key}
+                {#each displayTriggers as actionId, i (actionId)}
+                    {@const isPlaceholder = isPlaceholderActive && $draggedIndices.some((dIdx) => actionId === action.triggers[dIdx])}
+
+                    <DragItemWrapper index={i} controller={dragReorder} {isPlaceholder} handleOnly>
+                        <CreateAction mainId={id} {actionId} existingActions={action.triggers} actionValue={action.actionValues?.[actionId]} actionNameIndex={i + 1} on:change={(e) => changeAction(e, i)} on:choose={() => (actionSelector = { id: actionId, index: i })} {mode} choosePopup isDragging={$draggedIndices.length > 0} />
+                    </DragItemWrapper>
                 {/each}
                 {#if !action.triggers?.length || addTrigger}
                     <CreateAction actionId="" existingActions={action.triggers || []} on:change={changeAction} on:choose={() => (actionSelector = { id: "" })} {mode} choosePopup />

@@ -1,9 +1,11 @@
 <script lang="ts">
     import { fade, scale } from "svelte/transition"
     import type { Popups } from "../../../types/Main"
-    import { activePopup, alertMessage, os, popupData, special } from "../../stores"
+    import { EFFECTS_LIST } from "../../audio/effects/audioEffectsHelpers"
+    import { activePopup, alertMessage, isOptimizedMode, os, popupData } from "../../stores"
     import { MENU_BAR_HEIGHT } from "../../utils/common"
-    import { popups } from "../../utils/popup"
+    import { translateText } from "../../utils/language"
+    import { clearPopupSubmit, popups } from "../../utils/popup"
     import { disablePopupClose } from "../../utils/shortcuts"
     import T from "../helpers/T.svelte"
     import MaterialButton from "../inputs/MaterialButton.svelte"
@@ -23,6 +25,9 @@
     function updatePopup() {
         if (popupTimeout) return
 
+        // the incoming popup registers its own after mounting (if it opted in)
+        if (popupId !== $activePopup) clearPopupSubmit()
+
         popupId = $activePopup
         popupTimeout = setTimeout(() => {
             popupTimeout = null
@@ -38,7 +43,7 @@
         scrolled = e.target.scrollTop > 0
     }
 
-    $: isOptimized = $special.optimizedMode
+    $: isOptimized = $isOptimizedMode
 </script>
 
 {#if popupId !== null}
@@ -51,10 +56,14 @@
                             {#key popupId}
                                 <!-- margin-top: -5px; -->
                                 <h2 style="font-size: 1.3em;margin-top: -2px;">
-                                    {#if popupId === "new_update"}
+                                    {#if $popupData?.popupTitle}
+                                        {translateText($popupData.popupTitle)}
+                                    {:else if popupId === "new_update"}
                                         <T id="about.new_update" />: <span style="color: var(--secondary);">v{$popupData.latestVersion}</span>
                                     {:else if popupId === "pco_picker"}
                                         Planning Center
+                                    {:else if popupId === "audio_effect" && $popupData?.effect}
+                                        <T id={EFFECTS_LIST.find((a) => a.id === $popupData.effect)?.label || "popup.audio_effect"} />
                                     {:else}
                                         <T id="popup.{popupId}" />
                                     {/if}

@@ -1,10 +1,13 @@
 <script lang="ts">
+    import { onDestroy } from "svelte"
     import type { DrawerTabIds } from "../../../types/Tabs"
-    import { activeDrawerTab, activeEdit, activePage, activePopup, activeProject, activeShow, activeTriggerFunction, dictionary, drawer, drawerOpenedInEdit, drawerTabsData, focusMode, labelsDisabled, mediaOptions, os, previousShow, projects, quickTextCache, scriptureSettings, selected, showsCache } from "../../stores"
+    import { activeDrawerTab, activeEdit, activeFocus, activePage, activePopup, activeProject, activeShow, activeTriggerFunction, dictionary, drawer, drawerOpenedInEdit, drawerTabsData, focusMode, labelsDisabled, mediaOptions, os, previousShow, projects, quickTextCache, scriptureSettings, selected, showsCache } from "../../stores"
     import { DEFAULT_DRAWER_HEIGHT, DEFAULT_WIDTH, MENU_BAR_HEIGHT } from "../../utils/common"
+    import { startResizing, stopResizing } from "../../utils/cursor"
     import { translateText } from "../../utils/language"
     import { getAccess } from "../../utils/profile"
-    import { shouldOpenReplace } from "../../utils/shortcuts"
+    import { getNormalizedKey, shouldOpenReplace } from "../../utils/shortcuts"
+    import { isTypingTarget } from "../../utils/shortcutsHelper"
     import { drawerTabs } from "../../values/tabs"
     import Content from "../drawer/Content.svelte"
     import Navigation from "../drawer/Navigation.svelte"
@@ -32,6 +35,8 @@
     function mousedown(e: any) {
         if (e.target.closest(".search")) return
 
+        startResizing("ns-resize")
+
         maxHeight = window.innerHeight - topHeight - ($os.platform === "win32" ? MENU_BAR_HEIGHT - 0.3 : 0)
         mouse = {
             x: e.clientX,
@@ -43,16 +48,26 @@
     // open drawer if autoclosed
     $: if ($activePage === "show" && $drawer.autoclosed) setTimeout(() => drawer.set({ height: $drawer.stored ?? DEFAULT_DRAWER_HEIGHT, stored: null }), 100)
 
+    let animFrame: number | null = null
     function mousemove(e: any) {
         if (!mouse) return
 
-        drawer.set({ height: getHeight(window.innerHeight - e.clientY - mouse.offsetY), stored: null })
+        if ($selected?.id || $selected?.data?.length) selected.set({ id: null, data: [] })
 
-        selected.set({ id: null, data: [] })
+        if (animFrame) return
+        animFrame = requestAnimationFrame(() => {
+            animFrame = null
+            if (!mouse) return
 
-        const isClosed = $drawer.height <= minHeight
-        if (isClosed) drawerOpenedInEdit.set(false)
-        else if ($activePage === "edit") drawerOpenedInEdit.set(true)
+            const newHeight = getHeight(window.innerHeight - e.clientY - mouse.offsetY)
+            if (newHeight !== $drawer.height) {
+                drawer.set({ height: newHeight, stored: null })
+
+                const isClosed = newHeight <= minHeight
+                if (isClosed) drawerOpenedInEdit.set(false)
+                else if ($activePage === "edit") drawerOpenedInEdit.set(true)
+            }
+        })
     }
 
     function getHeight(height: number) {
@@ -98,9 +113,21 @@
     function mouseup(e: any) {
         if (!e.target.closest("input") && !e.target.closest(".contextMenu") && !searchValue.length) searchActive = false
 
-        mouse = null
+        if (animFrame) {
+            cancelAnimationFrame(animFrame)
+            animFrame = null
+        }
+        if (mouse) {
+            stopResizing()
+            mouse = null
+        }
         if (!e.target.closest(".top")) move = false
     }
+
+    onDestroy(() => {
+        if (animFrame) cancelAnimationFrame(animFrame)
+        if (mouse) stopResizing()
+    })
 
     $: activeTab = $activeDrawerTab
     function openDrawerTab(tab: { id: string; name: string; icon: string }) {
@@ -120,13 +147,10 @@
     }
 
     let searchValue = ""
-    $: searchValue = searchValue.endsWith(" ") ? removeWhitespace(searchValue) + " " : removeWhitespace(searchValue)
     $: if ($activeDrawerTab) searchValue = ""
-    const removeWhitespace = (v: string) =>
-        v
-            .split(" ")
-            .filter((n) => n)
-            .join(" ")
+    // single space normalization for search input
+    const removeWhitespace = (v: string) => v.trim().replace(/\s+/g, " ")
+    $: searchValue = removeWhitespace(searchValue) + (searchValue.endsWith(" ") ? " " : "")
     function search() {
         if (storeHeight === null && $drawer.height > minHeight) return
 
@@ -138,7 +162,11 @@
     let firstMatch: null | any = null
     let searchElem: HTMLInputElement | undefined
     async function keydown(e: KeyboardEvent) {
-        if ((e.ctrlKey || e.metaKey) && e.key === "f") {
+        if (e.shiftKey || e.altKey) return
+
+        const ctrlKey = e.ctrlKey || e.metaKey ? getNormalizedKey(e) : ""
+
+        if (ctrlKey === "f") {
             if ($activePopup === "show" || shouldOpenReplace()) return
             focusSearch()
 
@@ -153,40 +181,58 @@
                     return a
                 })
             }
-        } else if ((e.ctrlKey || e.metaKey) && e.key === "d") {
+        } else if (ctrlKey === "d" && !isTypingTarget(document.activeElement)) {
             if (!$selected?.id && !$activeEdit.items.length) click(null)
         } else if (e.key === "Enter") {
-            if (document.activeElement !== searchElem || !searchValue.length || !firstMatch || !$activeProject || $focusMode) return
+            if (document.activeElement !== searchElem || !searchValue.trim().length || !firstMatch) return
             if ($activeDrawerTab !== "shows") return
 
             let match = $activeShow?.data?.searchInput === true ? { id: $activeShow.id } : firstMatch
+
+            // create from search
+            if (match === "SEARCH_CREATE") {
+                const name = searchValue.trim()
+                quickTextCache.set({ name: name[0]?.toUpperCase() + name.slice(1), text: "", fromSearch: true })
+                activePopup.set("show")
+                return
+            }
+
+            if (!$activeProject) {
+                // open the show
+                if ($focusMode) activeFocus.set({ id: match.id, type: "show" })
+                else activeShow.set({ id: match.id, type: "show" })
+                return
+            }
 
             // play
             if (e.ctrlKey || e.metaKey) {
                 const showId = match.id
                 await loadShows([showId])
+                if (!$showsCache[showId]) return
+
                 let layoutRef = getLayoutRef(showId)
                 let firstEnabledIndex = layoutRef.findIndex((a) => !a.data.disabled)
                 if (firstEnabledIndex === -1) return
+
                 updateOut("active", firstEnabledIndex, layoutRef)
                 setOutput("slide", { id: showId, layout: $showsCache[showId].settings.activeLayout, index: firstEnabledIndex })
                 return
             }
 
-            // create from search
-            if (match === "SEARCH_CREATE") {
-                quickTextCache.set({ name: searchValue[0]?.toUpperCase() + searchValue.slice(1), text: "", fromSearch: true })
-                activePopup.set("show")
-                return
-            }
-
             searchElem.select()
-            let newIndex = ($activeShow?.index ?? $projects[$activeProject]?.shows?.length - 1) + 1
+            const currentIndex = $focusMode ? $activeFocus?.index : $activeShow?.index
+            let newIndex = (currentIndex ?? $projects[$activeProject]?.shows?.length - 1) + 1
             if ($activePage === "show") history({ id: "UPDATE", newData: { key: "shows", index: newIndex, data: { id: match.id } }, oldData: { id: $activeProject }, location: { page: "show", id: "project_ref" } })
-            activeShow.set({ ...match, index: newIndex })
+            if ($focusMode) activeFocus.set({ ...match, index: newIndex, type: "show" })
+            else activeShow.set({ ...match, index: newIndex })
             searchValue = ""
-        } else if (e.key === "Escape") {
-            if (!searchValue.length && searchActive) searchActive = false
+        }
+    }
+
+    function searchKeydown(e: KeyboardEvent) {
+        if (e.key === "Escape") {
+            searchActive = false
+            searchValue = ""
         }
     }
 
@@ -241,7 +287,7 @@
             {/each}
         </span>
 
-        <input bind:this={searchElem} class:hidden={!searchActive && !searchValue.length} class="search edit drawer_search" type="text" placeholder={translateText("main.search...", $dictionary)} bind:value={searchValue} on:input={search} use:selectTextOnFocus />
+        <input bind:this={searchElem} class:hidden={!searchActive && !searchValue.length} class="search edit drawer_search" type="text" placeholder={translateText("main.search...", $dictionary)} bind:value={searchValue} on:input={search} on:keydown={searchKeydown} use:selectTextOnFocus />
         {#if !searchActive && !searchValue.length}
             <Button class="search" style="border-bottom: 2px solid var(--secondary);" on:click={() => (searchActive = true)} title={translateText("tabs.search_tip [Ctrl+F]")} bold={false}>
                 <Icon id="search" size={1.4} white right={!$labelsDisabled && !$focusMode} />

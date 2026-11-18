@@ -14,6 +14,7 @@
     export let mirror = false
     export let preview = false
     export let transition: Transition
+    export let styleIdOverride = ""
 
     $: transitionEnabled = !!((transition.type !== "none" && transition.duration) || transition.in || transition.out)
 
@@ -36,8 +37,6 @@
     }
 
     const showItemRef = { outputId, type: "default" }
-    // $: videoTime = $videosTime[outputId] || 0
-    // $: if ($activeTimers || $variables || $playingAudio || $playingAudioPaths || videoTime) updateValues()
     let conditionsUpdater = 0
     let isMic = false
     $: isMic = JSON.stringify(currentItems.map((a) => a?.conditions) || "").includes('"element":"volume"')
@@ -59,8 +58,10 @@
 {#key show}
     {#each currentItems as item}
         {#if show && shouldItemBeShown(item, [], showItemRef, conditionsUpdater)}
-            <SlideItemTransition {transitionEnabled} globalTransition={transition} {item} let:customItem>
-                <Textbox item={customItem} ref={{ type: "overlay", id }} {mirror} {preview} {outputId} updateDynamicValues={!isClearing} />
+            {@const itemTransitionEnabled = (!mirror || preview) && transitionEnabled}
+
+            <SlideItemTransition transitionEnabled={itemTransitionEnabled} {isClearing} {preview} globalTransition={transition} {item} let:customItem>
+                <Textbox item={customItem} ref={{ type: "overlay", id }} {mirror} {preview} {outputId} {styleIdOverride} updateDynamicValues={!isClearing} />
             </SlideItemTransition>
         {/if}
     {/each}

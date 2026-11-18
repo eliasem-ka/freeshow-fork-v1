@@ -23,8 +23,7 @@ export const slideItems: AddItemGroup[] = [
         // label: "media",
         items: [
             { id: "media", icon: "image", label: "items.media" },
-            { id: "camera", icon: "camera", label: "items.camera" },
-            { id: "web", icon: "web", label: "items.web" }
+            { id: "camera", icon: "camera", label: "items.camera" }
         ]
     },
     {
@@ -49,6 +48,8 @@ export const slideItems: AddItemGroup[] = [
                 icon: "arrow_back_modern",
                 label: "main.more",
                 children: [
+                    { id: "web", icon: "web", label: "items.web" },
+                    { id: "qr_code", icon: "qr_code", label: "items.qr_code" },
                     { id: "slide_tracker", icon: "percentage", label: "items.slide_tracker" },
                     { id: "events", icon: "calendar", label: "items.events" },
                     { id: "weather", icon: "cloud", label: "items.weather" },
@@ -78,8 +79,7 @@ export const stageItems: AddItemGroup[] = [
     {
         items: [
             { id: "media", icon: "image", label: "items.media" },
-            { id: "camera", icon: "camera", label: "items.camera" },
-            { id: "web", icon: "web", label: "items.web" }
+            { id: "camera", icon: "camera", label: "items.camera" }
         ]
     },
     {
@@ -98,6 +98,8 @@ export const stageItems: AddItemGroup[] = [
                 icon: "arrow_back_modern",
                 label: "main.more",
                 children: [
+                    { id: "web", icon: "web", label: "items.web" },
+                    { id: "qr_code", icon: "qr_code", label: "items.qr_code" },
                     { id: "slide_tracker", icon: "percentage", label: "items.slide_tracker" },
                     { id: "metronome", icon: "metronome", label: "items.metronome" },
                     { id: "visualizer", icon: "visualizer", label: "items.visualizer" }

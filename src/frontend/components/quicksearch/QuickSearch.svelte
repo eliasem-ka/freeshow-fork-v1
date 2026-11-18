@@ -2,8 +2,9 @@
 
 <script lang="ts">
     import { fade, fly } from "svelte/transition"
-    import { quickSearchActive, special, theme, themes } from "../../stores"
+    import { isOptimizedMode, quickSearchActive, theme, themes } from "../../stores"
     import { translateText } from "../../utils/language"
+    import { getNormalizedKey } from "../../utils/shortcuts"
     import { hexToRgb } from "../helpers/color"
     import Icon from "../helpers/Icon.svelte"
     import T from "../helpers/T.svelte"
@@ -11,7 +12,7 @@
     import TextInput from "../inputs/TextInput.svelte"
     import Center from "../system/Center.svelte"
     import { quicksearch, quickSearchCategoryNames, selectQuicksearchValue, type SearchCategory } from "./quicksearch"
-    import { getNormalizedKey } from "../../utils/shortcuts"
+    import { highlightText } from "./searchHighlight"
 
     let values: any[] = []
     let searchValue = ""
@@ -142,36 +143,12 @@
         rgb = { r: Math.max(0, newRgb.r - 1), g: Math.max(0, newRgb.g - 5), b: Math.max(0, newRgb.b - 5) }
     }
 
-    $: isOptimized = $special.optimizedMode
+    $: isOptimized = $isOptimizedMode
 
     // auto-scroll to selected item
     $: if (values.length && selectedIndex >= 0) {
         const selectedEl = document.getElementById(`qs-item-${selectedIndex}`)
         if (selectedEl) selectedEl.scrollIntoView({ block: "nearest" })
-    }
-
-    // highlight matching text
-    function highlightMatch(text: string, search: string): string {
-        if (!search || !text) return text
-
-        // Strict phrase match first (highest priority highlight)
-        const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-        const strictRegex = new RegExp(`(${escapedSearch})`, "gi")
-        if (strictRegex.test(text)) {
-            return text.replace(strictRegex, "<mark>$1</mark>")
-        }
-
-        // Token match: highlight individual words
-        const words = search.split(/\s+/).filter((w) => w.length >= 1)
-        if (words.length > 0) {
-            // Sort by length descending to match longer words first
-            words.sort((a, b) => b.length - a.length)
-            const pattern = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")
-            const regex = new RegExp(`(${pattern})`, "gi")
-            return text.replace(regex, "<mark>$1</mark>")
-        }
-
-        return text
     }
 
     let centered = true
@@ -235,7 +212,7 @@
                                             {/if}
                                         </p>
                                         {#if value.description}
-                                            <p class="description">{@html highlightMatch(value.description, actualSearchText || searchValue)}</p>
+                                            <p class="description">{@html highlightText(value.description, actualSearchText || searchValue)}</p>
                                         {/if}
                                     </div>
                                 </MaterialButton>

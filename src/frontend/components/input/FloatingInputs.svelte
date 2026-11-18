@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { special } from "../../stores"
+    import { isOptimizedMode } from "../../stores"
     import { isDarkTheme } from "../../utils/common"
     import Icon from "../helpers/Icon.svelte"
     import MaterialButton from "../inputs/MaterialButton.svelte"
@@ -14,7 +14,7 @@
     let open = false
 
     const light = !isDarkTheme()
-    $: isOptimized = $special.optimizedMode
+    $: isOptimized = $isOptimizedMode
 </script>
 
 <!-- in:fade={{ duration: 80 }} -->
@@ -153,7 +153,8 @@
         transition: 0.4s filter ease;
     }
     .row.gradient :global(button:not(.isActive):not(:disabled):hover),
-    .row.gradient :global(button:not(.isActive):not(:disabled):active) {
+    .row.gradient :global(button:not(.isActive):not(:disabled):active),
+    .row.gradient :global(button:not(.isActive):not(:disabled):hover:active) {
         background:
             linear-gradient(var(--background), var(--background)) padding-box,
             linear-gradient(160deg, #8000f0 0%, #9000f0 10%, #b300f0 20%, #d100db 35%, var(--secondary) 100%) border-box !important;

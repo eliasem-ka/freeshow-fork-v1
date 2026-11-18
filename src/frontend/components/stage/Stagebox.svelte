@@ -1,15 +1,18 @@
 <script lang="ts">
     import { getContext, onDestroy } from "svelte"
+    import type { Resolution } from "../../../types/Settings"
     import type { StageItem, StageLayout as TStageLayout } from "../../../types/Stage"
-    import { activePopup, activeStage, activeTimers, allOutputs, currentWindow, dictionary, outputs, outputSlideCache, refreshEditSlide, stageShows, timers, variables } from "../../stores"
+    import { activePopup, activeStage, activeTimers, allOutputs, currentWindow, dictionary, media, outputs, outputSlideCache, refreshEditSlide, stageShows, timers, variables } from "../../stores"
+    import { startResizing } from "../../utils/cursor"
     import { translateText } from "../../utils/language"
     import { sendBackgroundToStage } from "../../utils/stageTalk"
+    import { videoExtensions } from "../../values/extensions"
     import EditboxLines from "../edit/editbox/EditboxLines.svelte"
-    import autosize from "../edit/scripts/autosize"
+    import autosize, { getAutoSizeOptions } from "../edit/scripts/autosize"
     import { isConditionMet } from "../edit/scripts/itemHelpers"
     import { getItemText } from "../edit/scripts/textStyle"
-    import { clone, keysToID, sortByName } from "../helpers/array"
     import Icon from "../helpers/Icon.svelte"
+    import { getExtension, loadThumbnail, mediaSize } from "../helpers/media"
     import { getActiveOutputs, getStageResolution, percentageStylePos } from "../helpers/output"
     import { createCSSVariables, replaceDynamicValues } from "../helpers/showActions"
     import { getStyles } from "../helpers/style"
@@ -25,7 +28,6 @@
     import Movebox from "../system/Movebox.svelte"
     import SlideNotes from "./items/SlideNotes.svelte"
     import SlideText from "./items/SlideText.svelte"
-    import VideoTime from "./items/VideoTime.svelte"
     import { getCustomStageLabel, getSlideTextItems, stageItemToItem } from "./stage"
     import StageLayout from "./StageLayout.svelte"
 
@@ -33,6 +35,7 @@
     export let item: StageItem | undefined
     export let stageLayout: TStageLayout | null = null
     export let ratio: number
+    export let resolution: Resolution | undefined = undefined
     export let preview = false
     export let edit = false
     export let disableStagePreview = false
@@ -45,20 +48,54 @@
     function mousedown(e: any) {
         if (!edit) return
 
-        console.log(e)
-        activeStage.update((ae) => {
-            if (e.shiftKey) {
-                if (ae.items.includes(id)) {
-                    if (e.target.closest(".line")) ae.items.splice(ae.items.indexOf(id), 1)
-                } else ae.items.push(id)
-            } else ae.items = [id]
+        const isSelected = $activeStage.items.includes(id)
 
-            return ae
-        })
+        if (e.shiftKey) {
+            if (!isSelected)
+                activeStage.update((ae) => {
+                    ae.items.push(id)
+                    return ae
+                })
+        } else if (!isSelected) {
+            activeStage.update((ae) => {
+                ae.items = [id]
+                return ae
+            })
+        } else if ($activeStage.items.length > 1) {
+            const startX = e.clientX,
+                startY = e.clientY
+            window.addEventListener(
+                "mouseup",
+                (upEvent) => {
+                    if (Math.hypot(upEvent.clientX - startX, upEvent.clientY - startY) < 4) {
+                        activeStage.update((ae) => {
+                            ae.items = [id]
+                            return ae
+                        })
+                    }
+                },
+                { once: true }
+            )
+        }
+
+        // deselect selected text
+        if (e.shiftKey) {
+            isShiftPressed = true
+            e.preventDefault()
+            if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+            window.getSelection()?.removeAllRanges()
+        }
 
         let target = e.target.closest(".stage_item")
         if (!target) return
 
+        const square = e.target.closest(".square")
+        if (square) {
+            const cursor = window.getComputedStyle(square).cursor || "nwse-resize"
+            startResizing(cursor)
+        }
+
+        const slideElem = target.closest(".slide") || target.closest(".stage")
         mouse = {
             x: e.clientX,
             y: e.clientY,
@@ -67,8 +104,8 @@
             top: target.offsetTop,
             left: target.offsetLeft,
             offset: {
-                x: (e.clientX - e.target.closest(".slide").offsetLeft) / ratio - target.offsetLeft,
-                y: (e.clientY - e.target.closest(".slide").offsetTop) / ratio - target.offsetTop,
+                x: (e.clientX - (slideElem?.offsetLeft || 0)) / ratio - target.offsetLeft,
+                y: (e.clientY - (slideElem?.offsetTop || 0)) / ratio - target.offsetTop,
                 width: e.clientX / ratio - target.offsetWidth,
                 height: e.clientY / ratio - target.offsetHeight
             },
@@ -77,8 +114,14 @@
         }
     }
 
+    let isShiftPressed = false
+    function keyup(e: KeyboardEvent) {
+        if (!edit) return
+        if (e.key === "Shift") isShiftPressed = false
+    }
     function keydown(e: KeyboardEvent) {
         if (!edit) return
+        if (e.key === "Shift") isShiftPressed = true
 
         if ((e.key === "Backspace" || e.key === "Delete") && $activeStage.items.includes(id) && !document.activeElement?.closest(".stage_item") && !document.activeElement?.closest(".edit")) {
             // selected timeline actions
@@ -95,9 +138,10 @@
     }
 
     function deselect(e: any) {
+        if (!edit) return
         if (e.target.closest(".stageTools") || e.target.closest(".contextMenu") || $activePopup) return
 
-        if ((edit && !e.shiftKey && e.target.closest(".stage_item")?.id !== id && $activeStage.items.includes(id) && !e.target.closest(".stage_item")) || e.target.closest(".panel")) {
+        if ((!e.shiftKey && e.target.closest(".stage_item")?.id !== id && $activeStage.items.includes(id) && !e.target.closest(".stage_item")) || e.target.closest(".panel")) {
             activeStage.update((ae) => {
                 ae.items = []
                 return ae
@@ -107,10 +151,13 @@
 
     // timer
     let today = new Date()
-    const dateInterval = setInterval(() => (today = new Date()), 1000)
+    let dateInterval: any = null
+    $: if ((item?.type === "timer" || id.includes("timer") || id.includes("clock")) && !dateInterval && !disableStagePreview) {
+        dateInterval = setInterval(() => (today = new Date()), 1000)
+    }
 
     onDestroy(() => {
-        clearInterval(dateInterval)
+        if (dateInterval) clearInterval(dateInterval)
         if (currentAutoSizeTimeout) clearTimeout(currentAutoSizeTimeout)
     })
 
@@ -118,19 +165,16 @@
 
     // Exclude slide_text from Stagebox autosize - it uses Textbox's own autosize instead
     // Stagebox autosize is for SlideNotes, SlideProgress, VideoTime, etc.
-    $: autoSizeEnabled = item?.type === "current_output" || item?.type === "slide_text" ? false : item?.type?.includes("text") ? item?.auto || (item?.textFit && item?.textFit !== "none") : item?.auto !== false || item?.textFit !== "none"
+    $: isAutoSized = item?.type === "text" ? (item.textFit || "none") !== "none" : item?.textFit !== "none"
+    $: autoSizeEnabled = item?.type === "current_output" || item?.type === "slide_text" ? false : isAutoSized
 
     let alignElem
     let size = 100
-    // Track previous slide to reset retry counter when slide changes
-    let prevSlideForAutoSize: any = undefined
-    // currentSlide & timeout to update auto size properly if slide notes
-    $: if (alignElem && item && currentSlide !== undefined && autoSizeEnabled) {
-        // Reset retry counter when slide changes
-        if (prevSlideForAutoSize !== currentSlide) {
-            autoSizeRetryCount = 0
-            prevSlideForAutoSize = currentSlide
-        }
+    let prevAutoSizeKey = ""
+    $: autoSizeKey = `${currentSlide?.id || ""}_${item?.style || ""}_${item?.textFit || ""}_${currentItemText || ""}_${JSON.stringify(item?.tracker || item?.clock || item?.timer || "")}`
+    $: if (alignElem && autoSizeEnabled && autoSizeKey !== prevAutoSizeKey) {
+        prevAutoSizeKey = autoSizeKey
+        autoSizeRetryCount = 0
         updateAutoSize()
     }
     let currentAutoSizeTimeout: NodeJS.Timeout | null = null
@@ -157,25 +201,23 @@
             // Reset retry count on successful measurement
             autoSizeRetryCount = 0
 
-            let itemFontSize = Number(getStyles(item?.style, true)?.["font-size"] || "") || 100
-
+            let itemFontSize = getStyles(item?.style, true)?.["font-size"]
             const type = item?.textFit || "growToFit"
-            let defaultFontSize = itemFontSize
-            let maxFontSize = type ? itemFontSize : 0
-
-            const isTextItem = item?.type === "slide_text" || (item?.type || "text") === "text"
-            if (!isTextItem) maxFontSize = 0
+            const isTextboxItem = (item?.type || "text") === "text"
+            const { defaultFontSize, maxFontSize } = getAutoSizeOptions(type, itemFontSize, isTextboxItem)
 
             size = autosize(alignElem, { type, textQuery: ".autoFontSize", defaultFontSize, maxFontSize })
 
             currentAutoSizeTimeout = null
         }, 20)
     }
-    $: autoSize = fontSize !== 100 ? Math.max(fontSize, size) : size
+    $: autoSize = isAutoSized ? size : fontSize
 
     // SLIDE
-    $: stageOutputId = currentShow?.settings?.output || getActiveOutputs($currentWindow === "output" ? $allOutputs : $outputs, false, true, true)[0]
-    $: currentOutput = $outputs[stageOutputId] || $allOutputs[stageOutputId] || {}
+    $: sourceOutputId = currentShow?.settings?.output
+    $: outputStores = $currentWindow === "output" ? $allOutputs : $outputs
+    $: stageOutputId = sourceOutputId && outputStores[sourceOutputId] ? sourceOutputId : getActiveOutputs(outputStores, false, true, true)[0]
+    $: currentOutput = outputStores[stageOutputId] || {}
     $: currentSlide = currentOutput.out?.slide || (slideOffset !== 0 ? $outputSlideCache[stageOutputId] || null : null)
 
     $: outputWindowId = item?.currentOutput?.source || stageOutputId
@@ -193,6 +235,24 @@
         let currentOutputs = $currentWindow ? $allOutputs : $outputs
         let bg = await sendBackgroundToStage(stageOutputId, currentOutputs, true)
 
+        // show thumbnails instead of playing videos when "Slide offset" is not 0
+        if (bg && slideOffset !== 0) {
+            for (const key of ["next", "next2"]) {
+                const item = bg[key]
+                const path = item?.path
+                if (typeof path !== "string" || !videoExtensions.includes(getExtension(path))) continue
+
+                const customThumbnail = item?.thumbnail || $media[path]?.contentFile?.thumbnail
+                if (customThumbnail) {
+                    bg[key] = { ...item, path: customThumbnail, filePath: customThumbnail }
+                    continue
+                }
+
+                const thumbnail = await loadThumbnail(path, mediaSize.big)
+                if (thumbnail && thumbnail !== path) bg[key] = { ...item, path: thumbnail, filePath: thumbnail }
+            }
+        }
+
         currentBackground = bg
     }
 
@@ -201,20 +261,21 @@
     $: isDisabledVariable = id.includes("variables") && $variables[id.split("#")[1]]?.enabled === false
 
     let firstTimerId = ""
-    $: if (!item?.timer?.id || id.includes("first_active_timer")) {
-        firstTimerId = $activeTimers[0]?.id
-        if (!firstTimerId) firstTimerId = sortByName(keysToID($timers)).find((timer) => timer.type !== "counter")?.id || ""
-    } else firstTimerId = ""
+    $: if (item?.type === "timer" || id.includes("first_active_timer")) {
+        firstTimerId = item?.timer?.id || $activeTimers[0]?.id || Object.values($timers).find((timer) => timer.type !== "counter")?.id || ""
+    } else {
+        firstTimerId = ""
+    }
 
     let itemStyle = ""
     let textStyle = ""
-    $: if (item?.style) updateStyles()
+    $: if (item?.style || isAutoSized !== undefined) updateStyles()
     function updateStyles() {
         const styles = getStyles(item?.style)
         const textStyleKeys = ["line-height", "text-decoration"]
         // For slide_text items with autosize, exclude font-size from container style
         // to prevent CSS inheritance of 800px (MAX_FONT_SIZE) before autosize computes correct value
-        const isSlideTextWithAutosize = item?.type === "slide_text" && (item?.auto !== false || (item?.textFit && item?.textFit !== "none"))
+        const isSlideTextWithAutosize = item?.type === "slide_text" && item?.textFit !== "none"
 
         itemStyle = ""
         textStyle = ""
@@ -228,18 +289,16 @@
         })
     }
 
-    function getCustomStyle(style: string) {
-        let outputResolution = getStageResolution()
-        style = percentageStylePos(style, outputResolution)
-        return style
-    }
+    $: stageResolution = resolution || getStageResolution(stageOutputId, outputStores)
+    $: customStyle = percentageStylePos(itemStyle, stageResolution)
 
-    let video: HTMLVideoElement | undefined
-    function loaded() {
-        if (!video) return
-        video.pause()
-        video.currentTime = video.duration / 2
-    }
+    // pause video at middle
+    // let video: HTMLVideoElement | undefined
+    // function loaded() {
+    //     if (!video) return
+    //     video.pause()
+    //     video.currentTime = video.duration / 2
+    // }
 
     $: if ($refreshEditSlide) {
         setTimeout(() => {
@@ -247,7 +306,7 @@
         }, 100)
     }
 
-    $: newItem = item ? clone({ ...item, timer: { ...(item.timer || {}), id: firstTimerId || item.timer?.id || "" } }) : null
+    $: newItem = item?.type === "timer" && firstTimerId && item.timer?.id !== firstTimerId ? { ...item, timer: { ...(item.timer || {}), id: firstTimerId } } : item
 
     // ACTIONS
 
@@ -265,15 +324,22 @@
 
     let conditionsUpdater = 0
     let updateTrigger = 0
-    const updaterInterval = setInterval(() => conditionsUpdater++, 3000)
-    const cssInterval = setInterval(() => updateTrigger++, 1000)
+    let updaterInterval: any = null
+    let cssInterval: any = null
+
+    const intervalTime = disableStagePreview || preview ? 5000 : 1000
+    const condIntervalTime = disableStagePreview || preview ? 5000 : 3000
+
+    updaterInterval = setInterval(() => conditionsUpdater++, condIntervalTime)
+    cssInterval = setInterval(() => updateTrigger++, intervalTime)
+
     onDestroy(() => {
-        clearInterval(updaterInterval)
-        clearInterval(cssInterval)
+        if (updaterInterval) clearInterval(updaterInterval)
+        if (cssInterval) clearInterval(cssInterval)
     })
 
     $: currentItemText = item ? (item.type === "slide_text" ? getSlideTextItems(stageLayout!, item).map(getItemText).join("") : getItemText(stageItemToItem(item))) : ""
-    $: showItemState = edit ? isConditionMet(item?.conditions?.showItem, currentItemText, "stage", conditionsUpdater) : false
+    $: showItemState = edit && item?.conditions?.showItem ? isConditionMet(item.conditions.showItem, currentItemText, "stage", conditionsUpdater) : false
 
     // fixed letter width
     $: fixedWidth = item?.type === "timer" || item?.type === "clock" ? "font-feature-settings: 'tnum' 1;" : ""
@@ -289,10 +355,10 @@
     })()
 
     const getLayoutMounted = getContext<() => boolean>("layoutMounted")
-    $: evaluatedText = replaceDynamicValues(currentItemText, { type: "stage", id }, ($variables ? 0 : 0) + updateTrigger)
     let lastText = ""
     let flashTriggerId = 0
     $: if (item?.flash?.enabled) {
+        const evaluatedText = replaceDynamicValues(currentItemText, { type: "stage", id }, ($variables ? 0 : 0) + updateTrigger)
         const currentText = evaluatedText || ""
         const parentIsMounting = getLayoutMounted ? !getLayoutMounted() : false
 
@@ -301,7 +367,7 @@
     }
 </script>
 
-<svelte:window on:keydown={keydown} on:mousedown={deselect} />
+<svelte:window on:mousedown={deselect} on:keydown={keydown} on:keyup={keyup} />
 
 <div
     {id}
@@ -311,7 +377,8 @@
     class:selected={edit && $activeStage.items.includes(id)}
     class:isDisabledVariable
     class:isOutput={!!$currentWindow}
-    style="{getCustomStyle(itemStyle)}{id.includes('slide') && !id.includes('tracker') ? '' : textStyle}{edit ? `outline: ${3 / ratio}px solid rgb(255 255 255 / 0.2);` : ''}--labelColor: {currentShow?.settings?.labelColor || '#d0a853'};{fixedWidth}{cssVariables}"
+    class:isShiftPressed
+    style="{customStyle}{id.includes('slide') && !id.includes('tracker') ? '' : textStyle}{edit ? `outline: ${3 / ratio}px solid rgb(255 255 255 / 0.2);` : ''}--labelColor: {currentShow?.settings?.labelColor || '#d0a853'};{fixedWidth}{cssVariables}"
     on:mousedown={mousedown}
 >
     {#if currentShow?.settings?.labels && id && item}
@@ -355,13 +422,13 @@
             <span style="pointer-events: none;width: 100%;height: 100%;{item.type === 'current_output' ? 'position: relative;' : ''}">
                 {#if item.type === "current_output" || id.includes("current_output")}
                     <!-- use PreviewCanvas only in remote StageShow -->
-                    <!-- {#if $currentWindow === "output" && !$special.optimizedMode} -->
+                    <!-- {#if $currentWindow === "output" && !$isOptimizedMode} -->
                     <!-- <PreviewCanvas capture={$previewBuffers[outputWindowId]} id={outputWindowId} fullscreen /> -->
                     {#if ($outputs[outputWindowId] || $allOutputs[outputWindowId])?.stageOutput}
                         {#if !disableStagePreview}
                             <StageLayout outputId={outputWindowId} stageId={($outputs[outputWindowId] || $allOutputs[outputWindowId])?.stageOutput} edit={false} disableStagePreview={true} />
                         {/if}
-                    {:else}
+                    {:else if ($outputs[outputWindowId] || $allOutputs[outputWindowId])?.enabled !== false}
                         <Output outputId={outputWindowId} mirror style="width: 100%; height: 100%;" />
                     {/if}
 
@@ -374,22 +441,21 @@
                     {#if (item.type ? item.includeMedia : !id.includes("_text")) && currentBackground}
                         {@const slideBackground = slideOffset === 0 ? currentBackground : slideOffset === 1 ? currentBackground.next : slideOffset === 2 ? currentBackground.next2 : null}
                         <!-- WIP this only includes "next" slide background -->
-                        {#if typeof slideBackground?.path === "string"}
+                        {#if typeof slideBackground?.path === "string" && slideBackground.path}
                             <div class="image" style="position: absolute;left: 0;top: 0;width: 100%;height: 100%;">
-                                <Media path={slideBackground.path} path2={slideBackground.filePath} mediaStyle={slideBackground.mediaStyle || {}} mirror bind:video on:loaded={loaded} />
+                                <!-- bind:video on:loaded={loaded} -->
+                                <Media outputId={outputWindowId} path={slideBackground.path} path2={slideBackground.filePath} mediaStyle={slideBackground.mediaStyle || {}} mirror pauseCenter={slideOffset !== 0} />
                             </div>
                         {/if}
                     {/if}
 
-                    <!-- refresh to update auto sizes -->
-                    <!-- refresh auto size if changing stage layout with #key made item unmovable .. -->
-                    <!-- For slide_text items, don't pass fontSize from item style (which is MAX_FONT_SIZE=800) -->
-                    <!-- Let Textbox's own autosize compute the correct value -->
+                    <!-- For slide_text items with autosize, don't pass fontSize from item style (which is MAX_FONT_SIZE=800) -->
+                    <!-- When autosize is disabled (None), pass stage item's fontSize -->
                     {#key currentSlide?.id || currentSlide?.index}
-                        <SlideText {currentSlide} {slideOffset} stageItem={item} chords={typeof item.chords === "boolean" ? item.chords : item.chords?.enabled} ref={{ type: "stage", id }} autoSize={item.textFit !== "none" && item.auto !== false} fontSize={0} {textStyle} style={item.type ? item.keepStyle : false} />
+                        <SlideText {currentSlide} {slideOffset} stageItem={item} chords={typeof item.chords === "boolean" ? item.chords : item.chords?.enabled} ref={{ type: "stage", id }} autoSize={isAutoSized} fontSize={isAutoSized ? 0 : fontSize} {textStyle} style={item.type ? item.keepStyle : false} />
                     {/key}
                 {:else if item.type === "slide_notes" || id.includes("notes")}
-                    <SlideNotes {currentSlide} {slideOffset} autoSize={item.auto !== false ? autoSize : fontSize} />
+                    <SlideNotes {currentSlide} {slideOffset} {autoSize} />
                 {:else if item.type === "text"}
                     {#if edit}
                         {#key $refreshEditSlide}
@@ -398,30 +464,28 @@
                             </span>
                         {/key}
                     {:else}
-                        <Textbox item={stageItemToItem(item)} stageItem={item} ref={{ type: "stage", id }} {fontSize} stageAutoSize={item.auto || (item.textFit && item.textFit !== "none")} isStage />
+                        <Textbox item={stageItemToItem(item)} stageItem={item} ref={{ type: "stage", id }} {fontSize} stageAutoSize={isAutoSized} isStage />
                     {/if}
                 {:else if item.type}
                     {#if newItem}
-                        <SlideItems item={stageItemToItem(newItem)} ref={{ type: "stage", id }} fontSize={item.auto !== false || item.textFit !== "none" ? autoSize : fontSize} {preview} outputId={stageOutputId} />
+                        <SlideItems item={stageItemToItem(newItem)} ref={{ type: "stage", id }} fontSize={autoSize} {preview} outputId={stageOutputId} isStage />
                     {/if}
                 {:else}
                     <!-- OLD CODE -->
                     <div>
                         {#if id.includes("slide_tracker")}
-                            <SlideProgress tracker={item.tracker || {}} autoSize={item.auto !== false ? autoSize : fontSize} outputId={stageOutputId} />
+                            <SlideProgress tracker={item.tracker || {}} {autoSize} outputId={stageOutputId} />
                         {:else if id.includes("clock")}
-                            <Clock style={false} fontStyle={item.auto === false ? "" : `font-size: ${edit ? autoSize : fontSize}px;`} seconds={item.clock?.seconds ?? true} dateFormat={item.clock?.show_date ? "DD/MM/YYYY" : "none"} />
-                        {:else if id.includes("video")}
-                            <VideoTime outputId={stageOutputId} autoSize={item.auto !== false ? autoSize : fontSize} reverse={id.includes("countdown")} />
+                            <Clock style={false} fontStyle="font-size: {edit ? autoSize : fontSize}px;" seconds={item.clock?.seconds ?? true} dateFormat={item.clock?.show_date ? "DD/MM/YYYY" : "none"} />
                         {:else if id.includes("first_active_timer")}
-                            <Timer item={stageItemToItem(item)} id={firstTimerId} {today} style="font-size: {item.auto !== false ? autoSize : fontSize}px;" />
+                            <Timer item={stageItemToItem(item)} id={firstTimerId} {today} style="font-size: {autoSize}px;" />
                         {:else if id.includes("timers")}
                             {#if $timers[id.split("#")[1]]}
-                                <Timer item={stageItemToItem(item)} id={id.split("#")[1]} {today} style="font-size: {item.auto !== false ? autoSize : fontSize}px;" />
+                                <Timer item={stageItemToItem(item)} id={id.split("#")[1]} {today} style="font-size: {autoSize}px;" />
                             {/if}
                         {:else if id.includes("variables")}
                             {#if $variables[id.split("#")[1]]}
-                                <Variable id={id.split("#")[1]} style="font-size: {item.auto !== false ? autoSize : fontSize}px;" ref={{ type: "stage", id }} hideText={!!$currentWindow} />
+                                <Variable id={id.split("#")[1]} style="font-size: {autoSize}px;" ref={{ type: "stage", id }} hideText={!!$currentWindow} />
                             {/if}
                         {:else}
                             {id}
@@ -456,6 +520,13 @@
 
     .stage_item.outline {
         outline: 5px solid rgb(255 255 255 / 0.2);
+    }
+    .stage_item.isShiftPressed,
+    .stage_item.isShiftPressed :global(*:not(.line)) {
+        cursor: default !important;
+    }
+    .stage_item.isShiftPressed :global(.line) {
+        cursor: move !important;
     }
     .stage_item.selected {
         outline: 5px solid var(--secondary);
@@ -578,5 +649,15 @@
         animation-duration: 600ms;
         animation-timing-function: ease-out;
         animation-fill-mode: forwards;
+    }
+
+    :global(.stage_item.isShiftPressed),
+    :global(.stage_item.isShiftPressed .edit),
+    :global(.stage_item.isShiftPressed .line) {
+        cursor: move !important;
+    }
+    :global(.stage_item.isShiftPressed .edit) {
+        pointer-events: none !important;
+        user-select: none !important;
     }
 </style>

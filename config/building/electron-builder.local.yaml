@@ -1,32 +1,8 @@
-appId: app.freeshow
-productName: FreeShow
-artifactName: FreeShow-${version}-${arch}.${ext}
+extends: config/building/electron-builder.yaml
 
-files:
-    - build/electron/**
-    - build/types/**
-    - public/**
-    - "!node_modules/@napi-rs"
-    - "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,test,tests}"
-    - "!**/node_modules/*/{*.d.ts,*.ts,*.map}"
-    - "!**/node_modules/{@types,typescript}/**"
-    - "!**/node_modules/**/*.pdb"
-    - "!**/node_modules/**/obj/**"
-
-extraResources:
-    - from: node_modules/slideshow/
-      to: slideshow
-      filter:
-          - connector-*
-
-# local install: NSIS installer WITHOUT Azure code signing
+# local install: NSIS installer WITHOUT code signing
 win:
-    target: NSIS
-    icon: build/public/icon.png
-    signtoolOptions: null
-    asarUnpack:
-        - "**/node_modules/macadam/**/*.node"
-        - "**/node_modules/libspotifyctl/**/*"
+    azureSignOptions: null
 
 nsis:
     oneClick: false
@@ -34,3 +10,6 @@ nsis:
     allowToChangeInstallationDirectory: true
     createDesktopShortcut: true
     createStartMenuShortcut: true
+
+mac:
+    identity: null

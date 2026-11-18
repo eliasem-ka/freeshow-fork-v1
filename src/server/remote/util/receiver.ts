@@ -1,8 +1,8 @@
-import { sanitizeVerseText } from "../../../common/scripture/sanitizeVerseText"
 import type { Item, Show } from "../../../types/Show"
-import { setError, translate } from "./helpers"
+import { sanitizeVerseText } from "../../common/util/scripture"
+import { applyThemeColors, setError, translate } from "./helpers"
 import { send } from "./socket"
-import { _, _get, _set, _update, activeTimers, currentScriptureState, mixer, overlays, runningActions, scriptureCache, scriptures, timers } from "./stores"
+import { _, _get, _set, _update, activeTimers, currentScriptureState, overlays, runningActions, scriptureCache, scriptures, timers } from "./stores"
 
 function sanitizeBiblePayload(bible: any) {
     if (!bible || !Array.isArray(bible.books)) return bible
@@ -33,17 +33,25 @@ function sanitizeChapterVerses(verses: any) {
 
 export type ReceiverKey = keyof typeof receiver
 export const receiver = {
+    THEME_COLORS: (data: any) => {
+        applyThemeColors(data)
+    },
     PASSWORD: (data: any) => {
         if (data.dictionary) _set("dictionary", data.dictionary)
         let password: boolean = data.password
         _update("password", "required", password)
     },
     ERROR: (data: any) => {
-        if (data === "wrongPass") {
+        const key = data?.key || ""
+        if (key === "wrongPass") {
             setError(translate("remote.wrong_password"))
             localStorage.removeItem("password")
             _update("password", "required", true)
-        } else setError(data)
+        } else if (key === "overLimit") {
+            setError(`${translate(`error.${key}`)} (${data?.max})`)
+        } else {
+            setError(key ? translate(`error.${key}`) : data)
+        }
     },
     LANGUAGE: (data: any) => {
         _.dictionary.update((a) => {
@@ -56,7 +64,8 @@ export const receiver = {
         })
     },
     ACCESS: () => {
-        if (_get("password").remember && _get("password").stored.length) localStorage.password = _get("password").stored
+        const storedPwd = _get("password").stored
+        if (storedPwd && storedPwd.length) localStorage.password = storedPwd
         _set("isConnected", true)
 
         // Request current output data which should include scripture state
@@ -241,6 +250,11 @@ export const receiver = {
         }
     },
     // SCRIPTURE_CHAPTERS and SCRIPTURE_VERSES are handled by GET_SCRIPTURE's bibleUpdate handling
+    SEARCH_SHOWS: (data: any) => {
+        if (data && data.results !== undefined) {
+            _set("showSearchResults", data)
+        }
+    },
     SEARCH_SCRIPTURE: (data: any) => {
         // Store search results for the search component to use
         if (data.searchResults !== undefined) {
@@ -302,11 +316,18 @@ export const receiver = {
         activeTimers.set(data.activeTimers)
         runningActions.set(data.runningActions)
     },
+    AUDIO_ROUTING: (data: any) => {
+        _set("audioRouting", data)
+    },
+    AUDIO_CHANNELS_DATA: (data: any) => {
+        _set("audioChannelsData", data || {})
+    },
+    GET_AUDIO_MIXER: (data: any) => {
+        if (data.audioRouting !== undefined) _set("audioRouting", data.audioRouting)
+        if (data.audioChannelsData !== undefined) _set("audioChannelsData", data.audioChannelsData || {})
+    },
     GET_AUDIO: (data: any) => {
         _set("audio", data)
-    },
-    GET_MIXER: (data: any) => {
-        _set("mixer", data)
     },
     MEDIA: (data: any) => {
         if (!data) {
@@ -333,52 +354,6 @@ export const receiver = {
         }
 
         _set("audio", audioFiles)
-    },
-    VOLUME: (data: any) => {
-        mixer.update((prev: any) => {
-            const current = prev || {}
-            return {
-                ...current,
-                main: {
-                    ...current.main,
-                    volume: data
-                }
-            }
-        })
-    },
-    OUTPUTS: (data: any) => {
-        mixer.update((prev: any) => {
-            const current = prev || {}
-            const currentOutputs = current.outputs || {}
-
-            // Merge new data with existing outputs to preserve volume/mute state if not present in update
-            const newOutputs = { ...currentOutputs }
-            Object.keys(data).forEach((id) => {
-                newOutputs[id] = { ...(newOutputs[id] || {}), ...data[id] }
-            })
-
-            return {
-                ...current,
-                outputs: newOutputs
-            }
-        })
-    },
-    AUDIO_CHANNELS_DATA: (data: any) => {
-        mixer.update((prev: any) => {
-            const current = prev || { main: {}, outputs: {} }
-            const { main, ...outs } = data
-
-            const outputs = { ...current.outputs }
-            Object.keys(outs).forEach((id) => {
-                if (outputs[id]) outputs[id] = { ...outputs[id], ...outs[id] }
-            })
-
-            return {
-                ...current,
-                main: { ...current.main, ...main },
-                outputs
-            }
-        })
     },
 
     /////

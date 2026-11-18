@@ -23,8 +23,8 @@ export const DEFAULT_DICTIONARY = {
     tabs: {
         shows: "Shows",
         media: "Media",
-        overlays: "Overlays",
         audio: "Audio",
+        overlays: "Overlays",
         scripture: "Scriptures",
         calendar: "Calendar",
         templates: "Templates",
@@ -86,7 +86,9 @@ export const DEFAULT_DICTIONARY = {
         delete: "Delete",
         done: "Done",
         back: "Back",
-        archive_title: "Archive"
+        archive_title: "Archive",
+        mute: "Mute",
+        unmute: "Unmute"
     },
     tools: {
         groups: "Groups"
@@ -117,8 +119,8 @@ export const DEFAULT_DICTIONARY = {
     context: {
         addToProject: "Add to project"
     },
-    audio: {
-        main: "Main",
-        mixer: "Mixer"
+    error: {
+        wrongPass: "Wrong password!",
+        overLimit: "Maximum connections reached!"
     }
 }

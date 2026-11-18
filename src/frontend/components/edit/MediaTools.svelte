@@ -1,13 +1,14 @@
 <script lang="ts">
     import type { TabsObj } from "../../../types/Tabs"
-    import { activeEdit, activeShow, media } from "../../stores"
+    import { activeEdit, activeShow, media, outputs } from "../../stores"
     import { clone } from "../helpers/array"
     import { getExtension, getMediaType } from "../helpers/media"
-    import { getFirstActiveOutput, setOutput } from "../helpers/output"
+    import { setOutput } from "../helpers/output"
     import { removeStore, updateStore } from "../helpers/update"
     import FloatingInputs from "../input/FloatingInputs.svelte"
     import MaterialButton from "../inputs/MaterialButton.svelte"
     import Tabs from "../main/Tabs.svelte"
+    import { VideoPlayer } from "../media/video/videoPlayer"
     import { addFilterString } from "./scripts/textStyle"
     import EditValues from "./tools/EditValues.svelte"
     import { setBoxInputValue } from "./values/boxes"
@@ -28,17 +29,12 @@
 
     $: mediaSections = clone(mediaBoxes[mediaType]?.sections || {})
 
-    // WIP camera / video cropping ??
-
     $: isVideo = mediaType === "video"
     $: if (mediaId && isVideo) getVideoDuration()
     function getVideoDuration() {
-        let video = document.createElement("video")
-        video.setAttribute("src", mediaId)
-        video.addEventListener("loadedmetadata", loaded)
+        VideoPlayer.getDuration(mediaId).then(loaded)
 
-        function loaded() {
-            let videoDuration = video?.duration || 0
+        function loaded(videoDuration: number) {
             if (!videoDuration) return
 
             const maxSoftLoop = Math.floor(videoDuration / 2)
@@ -52,6 +48,17 @@
         }
     }
 
+    function updateMatchingOutputs(modifyFunction: (bg: any) => void) {
+        Object.entries($outputs).forEach(([outId, out]) => {
+            const bg = out?.out?.background
+            if ((bg?.path || bg?.id) !== mediaId) return
+
+            const newBg = clone(bg)
+            modifyFunction(newBg)
+            setOutput("background", newBg, false, outId)
+        })
+    }
+
     function reset() {
         let deleteKeys: string[] = ["flipped", "flippedY", "blend", "fit", "speed", "volume", "fromTime", "toTime", "videoType", "cropping"]
 
@@ -60,15 +67,7 @@
         else if (active !== "media") return
         deleteKeys.forEach((key) => removeStore("media", { keys: [mediaId, key] }))
 
-        // update output
-        let currentOutput: any = getFirstActiveOutput()
-        let bg = currentOutput?.out?.background
-        if (!bg) return
-        const bgId = bg.path || bg.id || ""
-        if (bgId !== mediaId) return
-
-        deleteKeys.forEach((key) => delete bg[key])
-        setOutput("background", bg)
+        updateMatchingOutputs((bg) => deleteKeys.forEach((key) => delete bg[key]))
 
         mediaSections = clone(mediaBoxes[mediaType]?.sections || {})
     }
@@ -76,21 +75,23 @@
     export function valueChanged(input: any) {
         if (!mediaId) return
 
-        let value = input.value
-        if (value?.id !== undefined) value = value.id
+        let value = input.value?.id !== undefined ? input.value.id : input.value
         if (input.id === "filter") value = addFilterString(currentMedia?.filter || "", [input.key, value])
 
         updateStore("media", { keys: [mediaId, ...input.id.split(".")], value })
 
-        // update output filters
-        let currentOutput = getFirstActiveOutput()
-        let bg = currentOutput?.out?.background
-        if (!bg) return
-        const bgId = bg.path || bg.id || ""
-        if (bgId !== mediaId) return
+        VideoPlayer.updateProperties(mediaId)
 
-        bg[input.id] = value
-        setOutput("background", bg)
+        // update output filters / cropping
+        updateMatchingOutputs((bg) => {
+            const parts = input.id.split(".")
+            if (parts.length > 1) {
+                if (typeof bg[parts[0]] !== "object" || bg[parts[0]] === null) bg[parts[0]] = {}
+                bg[parts[0]][parts[1]] = value
+            } else {
+                bg[input.id] = value
+            }
+        })
     }
 
     function valueChanged2(e: any) {

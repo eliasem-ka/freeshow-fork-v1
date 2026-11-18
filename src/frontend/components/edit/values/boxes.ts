@@ -54,7 +54,7 @@ export type EditInput = {
     key?: string
     valueIndex?: number // css key subvalue (e.g. box-shadow)
     type: string
-    value: string | number | boolean
+    value: any
     values: { [key: string]: any }
     hidden?: boolean
     disabled?: boolean
@@ -187,7 +187,7 @@ export const textSections: { [key: string]: EditBoxSection } = {
             [
                 // probably not needed as we have line and item background color
                 // { label: "background_color", id: "style", key: "background-color", type: "color", value: "rgb(0 0 0 / 0)", values: { enableNoColor: true } },
-                { id: "nowrap", type: "checkbox", value: false, values: { label: "edit.no_wrap" } }
+                { id: "style", key: "white-space", type: "checkbox", value: false, styleValue: "nowrap", values: { label: "edit.no_wrap" } }
             ]
         ]
     },
@@ -317,12 +317,14 @@ export const textSections: { [key: string]: EditBoxSection } = {
     }
 }
 
-const croppingRowsPercentage = splitIntoRows([
-    { id: "cropping.top", type: "number", value: 0, values: { label: "screen.top (%)", max: 100, showSlider: true } },
-    { id: "cropping.right", type: "number", value: 0, values: { label: "screen.right (%)", max: 100, showSlider: true } },
-    { id: "cropping.bottom", type: "number", value: 0, values: { label: "screen.bottom (%)", max: 100, showSlider: true } },
-    { id: "cropping.left", type: "number", value: 0, values: { label: "screen.left (%)", max: 100, showSlider: true } }
-])
+function getCroppingRowsPercentage() {
+    return splitIntoRows([
+        { id: "cropping.top", type: "number", value: 0, values: { label: "screen.top (%)", max: 100, showSlider: true } },
+        { id: "cropping.right", type: "number", value: 0, values: { label: "screen.right (%)", max: 100, showSlider: true } },
+        { id: "cropping.bottom", type: "number", value: 0, values: { label: "screen.bottom (%)", max: 100, showSlider: true } },
+        { id: "cropping.left", type: "number", value: 0, values: { label: "screen.left (%)", max: 100, showSlider: true } }
+    ])
+}
 const mediaSections: { [key: string]: EditBoxSection } = {
     default: {
         inputs: splitIntoRows([
@@ -330,15 +332,34 @@ const mediaSections: { [key: string]: EditBoxSection } = {
             { id: "fit", type: "dropdown", value: "contain", values: { label: "media.fit", defaultValue: "contain", options: mediaFitOptions } },
             // { name: "popup.media_fit", id: "fit", input: "popup", popup: "media_fit" }, // WIP
             { id: "blend", type: "dropdown", value: "normal", values: { label: "media.blend", defaultValue: "normal", options: mediaBlendOptions } },
-            { id: "muted", type: "checkbox", value: false, values: { label: "actions.mute" } }, // , hidden: true
+            // { id: "muted", type: "checkbox", value: false, values: { label: "actions.mute" } }, // not needed anymore when we have volume
             { id: "loop", type: "checkbox", value: true, values: { label: "media._loop" } },
+            { id: "volume", type: "number", value: 1, multiplier: 100, values: { label: "media.volume", min: 0, max: 125, defaultValue: 100, showSlider: true } },
             { id: "speed", type: "number", value: 1, values: { label: "media.speed", defaultValue: 1, step: 0.1, min: 0.1, max: 15, showSlider: true } },
+            { id: "fromTime", type: "number", value: 0, values: { label: "inputs.start", max: 100000, showSlider: true } },
+            { id: "toTime", type: "number", value: 0, values: { label: "inputs.end", max: 100000, showSlider: true } },
             { id: "flipped", type: "checkbox", value: false, values: { label: "media.flip_horizontally" } },
             { id: "flippedY", type: "checkbox", value: false, values: { label: "media.flip_vertically" } }
         ])
     },
     cropping: {
-        inputs: croppingRowsPercentage
+        inputs: getCroppingRowsPercentage()
+    },
+    filters: {
+        inputs: filterSection
+    }
+}
+const cameraSections: { [key: string]: EditBoxSection } = {
+    default: {
+        inputs: splitIntoRows([
+            { id: "device", type: "popup", value: "", values: { label: "popup.choose_media_input", icon: "camera", popupId: "choose_media_input" } },
+            { id: "fit", type: "dropdown", value: "contain", values: { label: "media.fit", defaultValue: "contain", options: mediaFitOptionsNoBlur } },
+            { id: "flipped", type: "checkbox", value: false, values: { label: "media.flip_horizontally" } },
+            { id: "flippedY", type: "checkbox", value: false, values: { label: "media.flip_vertically" } }
+        ])
+    },
+    cropping: {
+        inputs: getCroppingRowsPercentage()
     },
     filters: {
         inputs: filterSection
@@ -398,13 +419,18 @@ export const itemBoxes: Box2 = {
         icon: "image",
         sections: mediaSections
     },
+    camera: {
+        icon: "camera",
+        sections: cameraSections
+    },
     web: {
         icon: "web",
         sections: {
             default: {
                 inputs: splitIntoRows([
                     { id: "web.src", type: "string", value: "", values: { label: "inputs.url" } },
-                    { id: "web.noNavigation", type: "checkbox", value: false, values: { label: "edit.disable_navigation" } }
+                    { id: "web.noNavigation", type: "checkbox", value: false, values: { label: "edit.disable_navigation" } },
+                    { id: "web.zoom", type: "number", value: 100, values: { label: "actions.zoom (%)", defaultValue: 100, min: 10, max: 1000, step: 5, showSlider: true, sliderValues: { min: 50, max: 250, step: 10 } } }
                 ])
             }
         }
@@ -500,6 +526,7 @@ export const itemBoxes: Box2 = {
                             placeholder: "E.g.: LT, LLLL, MMMM D YYYY h:mm A"
                         }
                     },
+                    { id: "clock.offsetDays", type: "number", value: 0, hidden: true, values: { label: "edit.offset (calendar.day)", defaultValue: 0, min: -10000, max: 10000 } },
                     {
                         id: "tip",
                         type: "tip",
@@ -512,19 +539,6 @@ export const itemBoxes: Box2 = {
                     }
                 ])
             })
-        }
-    },
-    camera: {
-        icon: "camera",
-        sections: {
-            default: {
-                inputs: splitIntoRows([
-                    { id: "device", type: "popup", value: "", values: { label: "popup.choose_camera", icon: "camera", popupId: "choose_camera" } },
-                    { id: "fit", type: "dropdown", value: "contain", values: { label: "media.fit", options: mediaFitOptions.filter((a) => a.value !== "blur") } },
-                    { id: "flipped", type: "checkbox", value: false, values: { label: "media.flip_horizontally" } },
-                    { id: "flippedY", type: "checkbox", value: false, values: { label: "media.flip_vertically" } }
-                ])
-            }
         }
     },
     slide_tracker: {
@@ -621,7 +635,29 @@ export const itemBoxes: Box2 = {
                                 options: [
                                     { value: "bars", label: "Lines" },
                                     { value: "particles", label: "Particles" },
-                                    { value: "kaleidoscope", label: "Kaleidoscope" }
+                                    { value: "kaleidoscope", label: "Kaleidoscope" },
+                                    { value: "aurora", label: "Aurora" },
+                                    { value: "horizon", label: "Horizon" },
+                                    { value: "orbit", label: "Orbit" },
+                                    { value: "soft-spectrum", label: "Soft spectrum" }
+                                ]
+                            }
+                        }
+                    ],
+                    [
+                        {
+                            id: "visualizer.palette",
+                            type: "dropdown",
+                            value: "ocean",
+                            hidden: true,
+                            values: {
+                                label: "Palette",
+                                defaultValue: "ocean",
+                                options: [
+                                    { value: "ocean", label: "Ocean" },
+                                    { value: "violet", label: "Violet" },
+                                    { value: "ember", label: "Ember" },
+                                    { value: "forest", label: "Forest" }
                                 ]
                             }
                         }
@@ -670,6 +706,21 @@ export const itemBoxes: Box2 = {
         icon: "star",
         sections: {
             default: { inputs: [[{ id: "style", key: "color", type: "color", value: "", values: { label: "edit.color", allowOpacity: true, allowEmpty: true } }]] },
+            shadow: {
+                expandAutoValue: {
+                    "text-shadow": "0 0 5px rgb(0 0 0 / 0.5)"
+                },
+                inputs: [
+                    [
+                        { id: "style", key: "text-shadow", valueIndex: 2, type: "number", value: 0, extension: "px", values: { label: "edit.blur", style: "flex: 4;" } },
+                        { id: "style", key: "text-shadow", valueIndex: 3, type: "color", value: "#000000", values: { label: "edit.color", allowOpacity: true, noLabel: true, style: "flex: 1;" } }
+                    ],
+                    [
+                        { id: "style", key: "text-shadow", valueIndex: 0, type: "number", value: 0, extension: "px", values: { label: "edit.offsetX", min: -1000 } },
+                        { id: "style", key: "text-shadow", valueIndex: 1, type: "number", value: 0, extension: "px", values: { label: "edit.offsetY", min: -1000 } }
+                    ]
+                ]
+            },
             special: {
                 inputs: [[{ id: "button.press", type: "dropdown", value: "", values: { label: "edit.press_action", options: "actions", allowEmpty: true } }], [{ id: "button.release", type: "dropdown", value: "", values: { label: "edit.release_action", options: "actions", allowEmpty: true } }]]
             }
@@ -710,5 +761,18 @@ export const itemBoxes: Box2 = {
             sections.align = { defaultValues: ["center", "center"], inputs: [alignX, alignY] }
             return sections
         })()
+    },
+    qr_code: {
+        icon: "qr_code",
+        sections: {
+            default: {
+                inputs: splitIntoRows([
+                    { id: "qr_code.text", type: "string", value: "", values: { label: "inputs.url" } },
+                    // colors:
+                    { id: "qr_code.color", type: "color", value: "#000000", values: { label: "edit.color", defaultValue: "#000000", allowOpacity: true, style: "flex: 1;" } },
+                    { id: "qr_code.background", type: "color", value: "#FFFFFF", values: { label: "edit.background_color", defaultValue: "#FFFFFF", allowOpacity: true, style: "flex: 1;" } }
+                ])
+            }
+        }
     }
 }

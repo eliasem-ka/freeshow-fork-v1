@@ -1,13 +1,12 @@
 <script lang="ts">
     import { onDestroy, setContext } from "svelte"
-    import { OUTPUT } from "../../../types/Channels"
-    import { activePage, activeStage, allOutputs, currentOutputSettings, currentWindow, outputs, settingsTab, stageShows, toggleOutputEnabled } from "../../stores"
+    import { activePage, activeStage, allOutputs, currentOutputSettings, outputs, settingsTab, stageShows, toggleOutputEnabled } from "../../stores"
     import { getAccess } from "../../utils/profile"
-    import { send } from "../../utils/request"
+    import ItemAddMenu from "../edit/ItemAddMenu.svelte"
     import { getSortedStageItems, shouldItemBeShown } from "../edit/scripts/itemHelpers"
     import { centerZoom } from "../edit/scripts/zoom"
-    import { clone } from "../helpers/array"
     import { history } from "../helpers/history"
+    import Icon from "../helpers/Icon.svelte"
     import { enableStageOutput, getStageOutputId, getStageResolution } from "../helpers/output"
     import { getStyles } from "../helpers/style"
     import T from "../helpers/T.svelte"
@@ -17,10 +16,10 @@
     import { getStyleResolution } from "../slide/getStyleResolution"
     import Zoomed from "../slide/Zoomed.svelte"
     import Center from "../system/Center.svelte"
+    import DropArea from "../system/DropArea.svelte"
     import Snaplines from "../system/Snaplines.svelte"
     import { getSlideTextItems, stageItemToItem, updateStageShow } from "./stage"
     import Stagebox from "./Stagebox.svelte"
-    import ItemAddMenu from "../edit/ItemAddMenu.svelte"
 
     export let outputId = ""
     export let stageId = ""
@@ -46,6 +45,12 @@
     let newStyles: { [key: string]: number | string } = {}
     $: active = $activeStage.items
 
+    let lastActiveIds = ""
+    $: if (active.join(",") !== lastActiveIds) {
+        newStyles = {}
+        lastActiveIds = active.join(",")
+    }
+
     let ratio = 1
 
     $: {
@@ -60,12 +65,13 @@
 
         active.forEach((id) => {
             let styles = getStyles(items[id].style)
-            Object.entries(newStyles).forEach(([key, value]) => (styles[key] = value.toString()))
+            const itemNewStyles = (newStyles as any).__multiPositions ? (newStyles as any).__multiPositions[id] || {} : newStyles
+
+            Object.entries(itemNewStyles).forEach(([key, value]) => (styles[key] = (value as any).toString()))
 
             let textStyles = ""
             Object.entries(styles).forEach((obj) => (textStyles += obj[0] + ":" + obj[1] + ";"))
 
-            // TODO: move multiple!
             newData[id] = textStyles
         })
 
@@ -85,23 +91,11 @@
     $: stageLayoutId = stageId || $activeStage.id
     $: layout = $stageShows[stageLayoutId || ""] || {}
 
-    // get video time (pre 1.4.0)
-    $: if ($currentWindow === "output" && Object.keys(layout.items || {}).some((id) => id.includes("video"))) requestVideoData()
-    let interval: NodeJS.Timeout | null = null
-    function requestVideoData() {
-        if (interval) return
-        interval = setInterval(() => send(OUTPUT, ["MAIN_REQUEST_VIDEO_DATA"], { id: outputId }), 1000) // , stageId
-    }
-
-    onDestroy(() => {
-        if (interval) clearInterval(interval)
-    })
-
     // RESOLUTION
 
     let width = 0
     let height = 0
-    $: stageOutputId = getStageOutputId($outputs)
+    $: stageOutputId = outputId || getStageOutputId($outputs)
     $: resolution = getStageResolution(stageOutputId, $outputs)
 
     // ACTION BAR
@@ -122,8 +116,6 @@
 
     $: stageItems = getSortedStageItems(stageLayoutId, $stageShows)
 
-    // $: videoTime = $videosTime[outputId] || 0
-    // { $activeTimers, $variables, $playingAudio, $playingAudioPaths, videoTime }
     let conditionsUpdater = 0
     const updaterInterval = setInterval(() => {
         if (!Array.isArray(stageItems)) return
@@ -153,39 +145,44 @@
 </script>
 
 <div class="stageArea">
-    <!-- <Main slide={stageShowId ? show : null} let:width let:height let:resolution> -->
     <div class="parent" class:noOverflow={zoom >= 1} bind:this={scrollElem} bind:offsetWidth={width} bind:offsetHeight={height}>
         {#if stageLayoutId}
-            <!-- TODO: stage resolution... -->
-            <Zoomed background={backgroundColor} style={getStyleResolution(resolution, width, height, "fit", { zoom })} {resolution} id={stageOutputId} bind:ratio isStage disableStyle hideOverflow={!edit} center>
-                <!-- TODO: snapping to top left... -->
-                {#if edit && !readOnly}
-                    <Snaplines bind:lines bind:newStyles bind:mouse {ratio} {active} isStage />
-                {/if}
-                {#key stageLayoutId}
-                    {#each stageItems as item, index}
-                        {#if (item.type || item.enabled !== false) && (edit || checkVisibility(index, conditionsUpdater))}
-                            <Stagebox edit={edit && !readOnly} stageLayout={edit ? null : layout} id={item.id} item={clone(item)} {ratio} {preview} {disableStagePreview} bind:mouse />
-                        {/if}
-                    {/each}
-                {/key}
-            </Zoomed>
+            {#if edit && !readOnly}
+                <DropArea id="edit" file>
+                    <Zoomed background={backgroundColor} style={getStyleResolution(resolution, width, height, "fit", { zoom })} {resolution} id={stageOutputId} bind:ratio isStage disableStyle hideOverflow={!edit} center>
+                        <Snaplines bind:lines bind:newStyles bind:mouse {ratio} {active} isStage />
+                        {#key stageLayoutId}
+                            {#each stageItems as item, index (item.id)}
+                                {#if (item.type || item.enabled !== false) && (edit || checkVisibility(index, conditionsUpdater))}
+                                    <Stagebox edit stageLayout={edit ? null : layout} id={item.id} {item} {ratio} {resolution} {preview} {disableStagePreview} bind:mouse />
+                                {/if}
+                            {/each}
+                        {/key}
+                    </Zoomed>
+                </DropArea>
+            {:else}
+                <Zoomed background={backgroundColor} style={getStyleResolution(resolution, width, height, "fit", { zoom })} {resolution} id={stageOutputId} bind:ratio isStage disableStyle hideOverflow={!edit} center>
+                    {#key stageLayoutId}
+                        {#each stageItems as item, index (item.id)}
+                            {#if (item.type || item.enabled !== false) && (edit || checkVisibility(index, conditionsUpdater))}
+                                <Stagebox stageLayout={edit ? null : layout} id={item.id} {item} {ratio} {resolution} {preview} {disableStagePreview} bind:mouse />
+                            {/if}
+                        {/each}
+                    {/key}
+                </Zoomed>
+            {/if}
         {:else if edit}
             <Center size={2} faded>
                 <T id="empty.layout" />
             </Center>
         {/if}
     </div>
-    <!-- </Main> -->
-
-    <!-- <div class="bar">
-        <T id="settings.connections" />: {Object.keys($connections.STAGE || {}).length}
-    </div> -->
 
     {#if edit && stageLayoutId}
         <FloatingInputs side="left" onlyOne>
             {#if !hasStageOutput}
-                <MaterialButton icon="autofill" title="stage.create_stage_output" on:click={createStageOutput}>
+                <MaterialButton title="stage.create_stage_output" on:click={createStageOutput}>
+                    <Icon id="autofill" gradient />
                     <T id="stage.create_stage_output" />
                 </MaterialButton>
             {/if}
@@ -218,6 +215,11 @@
     }
 
     .parent.noOverflow {
+        overflow: hidden;
+    }
+
+    /* disable "glitchy" scroll bars */
+    .parent.noOverflow :global(.droparea) {
         overflow: hidden;
     }
 </style>

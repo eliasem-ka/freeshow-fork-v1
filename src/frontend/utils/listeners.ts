@@ -1,11 +1,10 @@
 import { get } from "svelte/store"
 import { OUTPUT, REMOTE, STAGE } from "../../types/Channels"
-import { AudioAnalyser } from "../audio/audioAnalyser"
 import { AudioPlayer } from "../audio/audioPlayer"
 import { midiInListen } from "../components/actions/midi"
-import { getAllActiveOutputIds, getAllNormalOutputs } from "../components/helpers/output"
+import { getAllActiveOutputIds, getAllNormalOutputs, updateSyncedOutputs } from "../components/helpers/output"
 import { loadShows } from "../components/helpers/setShow"
-import { getShowCacheId, updateCachedShow, updateCachedShows, updateShowsList } from "../components/helpers/show"
+import { getShowCacheId, syncCachedShows, updateCachedShow, updateCachedShows, updateShowsList } from "../components/helpers/show"
 import {
     $,
     actions,
@@ -16,7 +15,7 @@ import {
     activeTimers,
     audioChannelsData,
     audioData,
-    audioEffects,
+    audioRouting,
     cachedShowsData,
     categories,
     colorbars,
@@ -29,7 +28,6 @@ import {
     effects,
     events,
     folders,
-    gain,
     globalRegexes,
     groups,
     livePrepare,
@@ -43,6 +41,7 @@ import {
     overlays,
     playerVideos,
     playingAudio,
+    playingVideoState,
     projects,
     refreshSlideThumbnails,
     runningActions,
@@ -53,79 +52,29 @@ import {
     special,
     stageShows,
     styles,
+    syncedOutputs,
     templateCategories,
     templates,
+    theme,
+    themes,
     timeFormat,
     timers,
     timerTags,
     transitionData,
     variables,
-    variableTags,
-    volume
+    variableTags
 } from "../stores"
 import { hasNewerUpdate } from "./common"
 import { driveConnect } from "./drive"
-import { convertBackgrounds, getMixerPayload } from "./remoteTalk"
+import { convertBackgrounds, getFilteredAudioChannels } from "./remoteTalk"
 import { send } from "./request"
 import { arrayToObject, eachConnection, filterObjectArray, sendData, timedout } from "./sendData"
 
-// simple debounce helper (shared for mixer pushes)
-const debounce = (fn: (...args: any[]) => void, wait: number) => {
-    let t: any
-    return (...args: any[]) => {
-        clearTimeout(t)
-        t = setTimeout(() => fn(...args), wait)
-    }
-}
-
-const sendRemoteMixer = debounce(() => send(REMOTE, ["GET_MIXER"], getMixerPayload()), 50)
-
-// shows list has not changed when only a timestamp value changes
-function hasShowsListChanged(prevData: any, newData: any): boolean {
-    if (!prevData || !newData) return true
-    const prevKeys = Object.keys(prevData)
-    const newKeys = Object.keys(newData)
-    if (prevKeys.length !== newKeys.length) return true
-
-    for (const key of newKeys) {
-        const prevShow = prevData[key]
-        const newShow = newData[key]
-
-        if (!prevShow || newShow.name !== prevShow.name || newShow.category !== prevShow.category || newShow.private !== prevShow.private || newShow.locked !== prevShow.locked || newShow.origin !== prevShow.origin || (newShow.quickAccess ? JSON.stringify(newShow.quickAccess) : "") !== prevShow.quickAccess) {
-            return true
-        }
-    }
-    return false
-}
-
-function copyShowsMetadata(data: any): any {
-    const copy: any = {}
-    if (!data) return copy
-    for (const key of Object.keys(data)) {
-        const show = data[key]
-        if (show) {
-            copy[key] = {
-                name: show.name,
-                category: show.category,
-                private: show.private,
-                locked: show.locked,
-                origin: show.origin,
-                quickAccess: show.quickAccess ? JSON.stringify(show.quickAccess) : ""
-            }
-        }
-    }
-    return copy
-}
-
 export function storeSubscriber() {
-    let lastShowsData: any = {}
     shows.subscribe(async (data) => {
-        if (await hasNewerUpdate("LISTENER_SHOWS", 200)) return
+        if (await hasNewerUpdate("LISTENER_SHOWS", 800)) return
 
         // sendData(REMOTE, { channel: "SHOWS", data })
-
-        if (!hasShowsListChanged(lastShowsData, data)) return
-        lastShowsData = copyShowsMetadata(data)
 
         // temporary cache shows data
         updateShowsList(data)
@@ -136,6 +85,9 @@ export function storeSubscriber() {
 
     showsCache.subscribe(async (data) => {
         if (await hasNewerUpdate("LISTENER_SHOWSCACHE")) return // TIMELINE style updates everytime unless set to 20ms
+
+        // update "shows" with new "showsCache" data
+        syncCachedShows(data)
 
         // needs to be sent before output data
         send(OUTPUT, ["SHOWS"], data)
@@ -246,9 +198,8 @@ export function storeSubscriber() {
         send(OUTPUT, ["OUTPUTS"], data)
         // used for stage mirror data
         send(OUTPUT, ["ALL_OUTPUTS"], data)
-
-        // REMOTE mixer updates (labels/available outputs)
-        sendRemoteMixer()
+        send(REMOTE, ["AUDIO_ROUTING"], getFilteredAudioChannels())
+        updateSyncedOutputs()
 
         // let it update properly
         setTimeout(() => {
@@ -261,6 +212,9 @@ export function storeSubscriber() {
         // sendData(STAGE, { channel: "SLIDES" }, true)
         // send(STAGE, ["OUTPUTS"], data)
         // sendBackgroundToStage(a)
+    })
+    syncedOutputs.subscribe((data) => {
+        send(OUTPUT, ["SYNCED_OUTPUTS"], data)
     })
     styles.subscribe((data) => {
         send(OUTPUT, ["STYLES"], data)
@@ -383,43 +337,30 @@ export function storeSubscriber() {
 
     special.subscribe((data) => {
         send(OUTPUT, ["SPECIAL"], data)
-
-        if (data.icecastEnabled) AudioAnalyser.recorderActivate()
-        else AudioAnalyser.recorderDeactivate()
     })
 
     slideTimelineSpeedMultiplier.subscribe((data) => {
         send(OUTPUT, ["SLIDE_TIMELINE_SPEED_MULTIPLIER"], data)
     })
 
-    volume.subscribe((data) => {
-        send(OUTPUT, ["VOLUME"], data)
-
-        // REMOTE mixer updates
-        sendRemoteMixer()
-    })
-    gain.subscribe((data) => {
-        send(OUTPUT, ["GAIN"], data)
+    audioRouting.subscribe(() => {
+        send(REMOTE, ["AUDIO_ROUTING"], getFilteredAudioChannels())
     })
     audioChannelsData.subscribe((data) => {
-        send(OUTPUT, ["AUDIO_CHANNELS_DATA"], data)
-
-        // REMOTE mixer updates
-        sendRemoteMixer()
+        send(REMOTE, ["AUDIO_CHANNELS_DATA"], data)
     })
 
-    audioEffects.subscribe(async (data) => {
-        if (await hasNewerUpdate("AUDIO_EFFECTS_CACHE", 50)) return
-
-        send(OUTPUT, ["AUDIO_EFFECTS"], data)
+    playingVideoState.subscribe((data) => {
+        send(OUTPUT, ["PLAYING_VIDEO_STATE"], data)
     })
 
     metronome.subscribe((data) => {
         send(OUTPUT, ["METRONOME"], data)
+        send(STAGE, ["METRONOME"], data)
     })
     metronomeTimer.subscribe((data) => {
         send(OUTPUT, ["METRONOME_TIMER"], data)
-        // WIP send to stage
+        send(STAGE, ["METRONOME_TIMER"], data)
     })
 
     timeFormat.subscribe((a) => {
@@ -477,6 +418,20 @@ export function storeSubscriber() {
         send(REMOTE, ["RUNNING_ACTIONS"], data)
     })
 
+    theme.subscribe(async (currentTheme) => {
+        if (await hasNewerUpdate("LISTENER_THEME_REMOTE", 30)) return
+
+        const themeObj = get(themes)[currentTheme]
+        if (themeObj?.colors) send(REMOTE, ["THEME_COLORS"], themeObj.colors)
+    })
+    themes.subscribe(async (allThemes) => {
+        if (await hasNewerUpdate("LISTENER_THEMES_REMOTE", 30)) return
+
+        const currentTheme = get(theme)
+        const themeObj = allThemes[currentTheme]
+        if (themeObj?.colors) send(REMOTE, ["THEME_COLORS"], themeObj.colors)
+    })
+
     activeShow.subscribe((data) => {
         if (!data?.id) return
         const type = data?.type || "show"
@@ -532,6 +487,7 @@ const initalOutputData = {
     TIME_FORMAT: "timeFormat",
 
     SPECIAL: "special",
+    SYNCED_OUTPUTS: "syncedOutputs",
 
     SLIDE_TIMELINE_SPEED_MULTIPLIER: "slideTimelineSpeedMultiplier",
 

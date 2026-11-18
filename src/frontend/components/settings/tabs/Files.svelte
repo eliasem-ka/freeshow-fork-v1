@@ -4,7 +4,7 @@
     import { Main } from "../../../../types/IPC/Main"
     import { requestMain, sendMain } from "../../../IPC/main"
     import { activePopup, alertMessage, autosave, cloudSyncData, dataPath, driveData, driveKeys, providerConnections, saved, special, statusIndicator } from "../../../stores"
-    import { changeTeam, setupCloudSync, socketDisconnect, updateCloudDeviceName } from "../../../utils/cloudSync"
+    import { changeTeam, setupCloudSync, socketDisconnect, syncWithCloud, updateCloudDeviceName } from "../../../utils/cloudSync"
     import { previousAutosave, startAutosave, wait } from "../../../utils/common"
     import { validateKeys } from "../../../utils/drive"
     import { translateText } from "../../../utils/language"
@@ -232,8 +232,7 @@
     }
 
     function syncNow() {
-        saved.set(false)
-        save(false, { autosave: true })
+        syncWithCloud()
     }
 
     async function restoreCloudBackupState() {
@@ -271,11 +270,6 @@
 
 <MaterialFolderPicker label="settings.data_location" value={$dataPath} on:change={updateDataPath} />
 
-<!-- DEPRECATED -->
-<!-- shows path should be a "Shows" folder inside of "Data location" -->
-<!-- {#if !$showsPath?.includes($dataPath) || !$showsPath?.includes("Shows")} -->
-<!-- <MaterialFolderPicker label="settings.show_location" value={$showsPath || ""} on:change={(e) => showsPath.set(e.detail)} /> -->
-<!-- {/if} -->
 <!-- {#key refreshInput}
     <MaterialToggleSwitch label="settings.user_data_location" disabled={!$dataPath} checked={$special.customUserDataLocation || false} defaultValue={false} on:change={(e) => toggle(e.detail, "customUserDataLocation")} />
 {/key} -->

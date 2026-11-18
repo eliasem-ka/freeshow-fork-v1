@@ -271,6 +271,7 @@ export function changeLayout(layout: LayoutRef[], slides: { [key: string]: Slide
     }
 
     ref = checkParentMove(ref, moved, index)
+    if (!ref.length) return []
     // WIP dont know why these are the same
     layout = ref
 
@@ -336,7 +337,7 @@ export function changeLayout(layout: LayoutRef[], slides: { [key: string]: Slide
 
         // find and remove old children (this is already done but wont remove all always)
         Object.keys(slides).forEach((slideId) => {
-            if (slideId === id) return
+            if (slideId === id || !slides[slideId]) return
             children.forEach((childId) => {
                 if (slides[slideId].children?.length) {
                     const childIndex = slides[slideId].children!.indexOf(childId)
@@ -537,9 +538,6 @@ export function splitItemInTwo(slideRef: LayoutRef, itemIndex: number | number[]
     const newSlide = clone(_show().slides([slideRef.id]).get()[0])
     const slides = clone(_show().get("slides"))
 
-    let scriptureFirstLines: Line[] | null = null
-    let scriptureSecondLines: Line[] | null = null
-
     for (const idx of itemIndexes) {
         if (!newSlide.items?.[idx]) continue
         let lines: Line[] = clone(_show().slides([slideRef.id]).items([idx]).get("lines")[0]?.[0] || [])
@@ -621,11 +619,13 @@ export function splitItemInTwo(slideRef: LayoutRef, itemIndex: number | number[]
                 if (pos > 0) {
                     if (!firstLines.length) firstLines.push({ align: line.align, text: [] })
                     firstLines[firstLines.length - 1].text.push({
+                        ...text,
                         style: text.style,
                         value: value.slice(0, pos)
                     })
                 }
                 secondLines[secondLines.length - 1].text.push({
+                    ...text,
                     style: text.style,
                     value: value.slice(0, value.length)
                 })
@@ -652,11 +652,6 @@ export function splitItemInTwo(slideRef: LayoutRef, itemIndex: number | number[]
 
         newSlide.items[idx].lines = secondLines
         slides[slideRef.id].items[idx].lines = firstLines
-
-        if (!scriptureFirstLines) {
-            scriptureFirstLines = firstLines
-            scriptureSecondLines = secondLines
-        }
     }
 
     delete newSlide.id
@@ -669,7 +664,7 @@ export function splitItemInTwo(slideRef: LayoutRef, itemIndex: number | number[]
     slides[slideId] = newSlide
 
     // update scripture dynamic values
-    const split = splitCustomDynamicValues(slides[slideRef.id].customDynamicValues)
+    const split = splitCustomDynamicValues(slides[slideRef.id].customDynamicValues, slides[slideRef.id].items, newSlide.items)
     if (split) {
         slides[slideRef.id].customDynamicValues = split.firstDV
         slides[slideId].customDynamicValues = split.secondDV
@@ -683,24 +678,86 @@ export function splitItemInTwo(slideRef: LayoutRef, itemIndex: number | number[]
     slides[parentId].children = children
 
     const showId = get(activeShow)?.id || ""
+    copySlideLayoutProperties(showId, slideRef, slideId)
+
     history({ id: "UPDATE", newData: { key: "slides", data: clone(slides) }, oldData: { id: showId }, location: { page: "show", id: "show_key", override: "show_slides_" + showId } })
 
     refreshEditSlide.set(true)
 }
 
-export function splitCustomDynamicValues(originalDV: any): { firstDV: any; secondDV: any } | null {
+export function copySlideLayoutProperties(showId: string, slideRef: LayoutRef, newSlideId: string) {
+    if (!slideRef?.data?.transition && !slideRef?.data?.mediaTransition && !slideRef?.data?.bindings) return
+    showsCache.update((a) => {
+        if (!a[showId]) return a
+        const activeLayout = a[showId].settings?.activeLayout
+        const parentLayoutIndex = slideRef.type === "child" ? slideRef.parent!.index : slideRef.index
+        const layoutSlide = a[showId].layouts?.[activeLayout]?.slides?.[parentLayoutIndex]
+        if (layoutSlide) {
+            if (!layoutSlide.children) layoutSlide.children = {}
+            if (!layoutSlide.children[newSlideId]) layoutSlide.children[newSlideId] = {}
+
+            // only chosen values
+            if (slideRef.data.transition) layoutSlide.children[newSlideId].transition = clone(slideRef.data.transition)
+            if (slideRef.data.mediaTransition) layoutSlide.children[newSlideId].mediaTransition = clone(slideRef.data.mediaTransition)
+            if (slideRef.data.bindings) layoutSlide.children[newSlideId].bindings = clone(slideRef.data.bindings)
+        }
+        return a
+    })
+}
+
+export function splitCustomDynamicValues(originalDV: any, firstItems?: Item[], secondItems?: Item[]): { firstDV: any; secondDV: any } | null {
     if (!originalDV) return null
-    const firstDV: any = {}
-    const secondDV: any = {}
+    const firstDV = clone(originalDV)
+    const secondDV = clone(originalDV)
+
+    if (firstItems?.length || secondItems?.length) {
+        const extractVerses = (items: Item[] = [], isFirst: boolean) => {
+            const result: Record<string, [string, string][]> = {}
+            items.forEach((item, itemIdx) => {
+                const key = itemIdx === 0 ? "scripture_text" : `scripture${itemIdx + 1}_text`
+                let verseNum = isFirst ? originalDV[key]?.[0]?.[0] || "0" : "0"
+                let currentText = ""
+                const verses: [string, string][] = []
+
+                item.lines?.forEach((line) => {
+                    line.text?.forEach((t) => {
+                        if (t.customType?.includes("disableTemplate")) {
+                            if (currentText.trim()) verses.push([verseNum, currentText.trim()])
+                            verseNum = (t.value || "").trim() || "0"
+                            currentText = ""
+                        } else if (t.value) {
+                            currentText += t.value
+                        }
+                    })
+                })
+                if (currentText.trim()) verses.push([verseNum, currentText.trim()])
+                if (verses.length) result[key] = verses
+            })
+            if (result.scripture_text) result.scripture1_text = result.scripture_text
+            return result
+        }
+
+        const firstVerses = extractVerses(firstItems, true)
+        const secondVerses = extractVerses(secondItems, false)
+
+        Object.keys(originalDV).forEach((key) => {
+            if (Array.isArray(originalDV[key])) {
+                if (firstVerses[key]) firstDV[key] = firstVerses[key]
+                if (secondVerses[key]) secondDV[key] = secondVerses[key]
+            }
+        })
+
+        firstDV.scripture_reference_last = ""
+        secondDV.scripture_reference_last = originalDV.scripture_reference_last || ""
+        return { firstDV, secondDV }
+    }
+
     Object.keys(originalDV).forEach((key) => {
         const val = originalDV[key]
         if (Array.isArray(val)) {
             const center = Math.ceil(val.length / 2)
             firstDV[key] = val.slice(0, center)
             secondDV[key] = val.slice(center)
-        } else {
-            firstDV[key] = val
-            secondDV[key] = val
         }
     })
     return { firstDV, secondDV }
@@ -708,46 +765,10 @@ export function splitCustomDynamicValues(originalDV: any): { firstDV: any; secon
 
 export function splitTextContentInHalf(text: string) {
     const center = Math.floor(text.length / 2)
-
-    // find split index based on input "./,/!/?" closest to center
-    function findSplitIndex(chars) {
-        const MARGIN = center / 2
-        let index = -1
-        for (let i = center - MARGIN; i <= center + MARGIN; i++) {
-            if (chars.includes(text[i])) index = i + 1
-        }
-        return index
-    }
-
-    function checkForSpaces(left = true) {
-        let index = -1
-        for (let i = center; left ? i >= 0 : i < text.length; i += left ? -1 : 1) {
-            if (text[i] === " ") {
-                index = i
-                break
-            }
-        }
-        return index
-    }
-
-    const splitChars = [".", ",", "!", "?"]
-    let splitIndex = findSplitIndex(splitChars)
-
-    // split by the closest space if no punctuations matched
-    if (splitIndex === -1) {
-        const leftIndex = checkForSpaces(true)
-        const rightIndex = checkForSpaces(false)
-
-        // get the closest space
-        if (leftIndex !== -1 && (rightIndex === -1 || center - leftIndex <= rightIndex - center)) splitIndex = leftIndex
-        else splitIndex = rightIndex
-    }
+    const splitIndex = findBestBreak(text, center, center / 2)
 
     if (splitIndex === -1) return [text]
-
-    const firstHalf = text.slice(0, splitIndex).trim()
-    const secondHalf = text.slice(splitIndex).trim()
-    return [firstHalf, secondHalf]
+    return [text.slice(0, splitIndex).trim(), text.slice(splitIndex).trim()]
 }
 
 export function mergeSlides(indexes: { index: number }[]) {
@@ -920,8 +941,7 @@ export function removeTagsAndContent(input) {
 
 // BREAK LONG LINES
 
-export function breakLongLines(showId: string, breakPoint: number) {
-    const slides = get(showsCache)[showId]?.slides
+export function breakLongLines(slides: { [key: string]: Slide }, breakPoint: number) {
     if (!slides || !Number(breakPoint)) return slides
 
     Object.values(slides).forEach((slide) => {
@@ -931,18 +951,24 @@ export function breakLongLines(showId: string, breakPoint: number) {
                 const newLines: Line[] = []
                 item.lines?.forEach((line) => {
                     // merge all text styles into one, if multiple!
-                    const lineText = line.text[0]
-                    if (typeof lineText !== "object" || lineText === null) return
+                    const lineText = line.text?.[0]
+                    if (!lineText) {
+                        newLines.push(line)
+                        return
+                    }
 
-                    lineText.value = getLineText(line)
+                    const fullLineText = getLineText(line)
+                    const words = fullLineText.split(" ").filter((w) => w !== "")
+                    if (words.length > Number(breakPoint)) {
+                        const center = Math.floor(fullLineText.length / 2)
+                        const res = findBestBreak(fullLineText, center, center / 2)
+                        const pivot = res > -1 ? res : center
 
-                    const textWords = lineText.value.split(" ")
-                    if (textWords.length > Number(breakPoint)) {
-                        const centerPoint = Math.floor(textWords.length / 2)
-                        const firstPart = textWords.slice(0, centerPoint).join(" ")
-                        const secondPart = textWords.slice(centerPoint).join(" ")
-                        const firstLine = { ...clone(line), text: [{ ...lineText, value: firstPart }] }
-                        const secondLine = { ...clone(line), text: [{ ...lineText, value: secondPart }] }
+                        const firstPart = fullLineText.slice(0, pivot).trim()
+                        const secondPart = fullLineText.slice(pivot).trim()
+                        const firstLine = { ...clone(line), text: [{ ...clone(lineText), value: firstPart }] }
+                        const secondLine = { ...clone(line), text: [{ ...clone(lineText), value: secondPart }] }
+
                         newLines.push(firstLine)
                         newLines.push(secondLine)
                         return
@@ -953,11 +979,62 @@ export function breakLongLines(showId: string, breakPoint: number) {
 
                 item.lines = newLines
                 freezeStop++
-            } while (item.lines.find((a) => a.text[0]?.value?.split(" ").length > breakPoint) && freezeStop < 500)
+            } while (
+                item.lines?.find(
+                    (a) =>
+                        getLineText(a)
+                            .split(" ")
+                            .filter((w) => w !== "").length > breakPoint
+                ) &&
+                freezeStop < 500
+            )
         })
     })
 
     return slides
+}
+
+// SPLIT AT PUNCTUATION
+
+const CJK_PUNC = ["，", "。", "；", "：", "！", "？", "、"]
+const CJK_START = ["「", "『", "（", "《", "〈", "【", "〔", "“", "‘"]
+const CJK_END = ["」", "』", "）", "》", "〉", "】", "〕", "”", "’"]
+const WRAP_CHARS = [...CJK_START, ...CJK_END, '"', "'", "(", ")", "[", "]", "{", "}"]
+const PUNC_REGEX = new RegExp(`[.,;:!?${CJK_PUNC.join("")}]`)
+
+export function findBestBreak(text: string, target: number, range: number) {
+    let best = -1
+    let bestDist = Infinity
+
+    const start = Math.floor(Math.max(0, target - range))
+    const end = Math.floor(Math.min(text.length, target + range))
+
+    for (let i = start; i < end; i++) {
+        const char = text[i]
+        const isPunc = PUNC_REGEX.test(char)
+        const isSpace = char === " "
+        if (!isPunc && !isSpace) continue
+
+        const dist = Math.abs(i - target)
+        const score = dist + (isPunc ? 0 : text.length)
+
+        if (score < bestDist) {
+            let pos = i + (isPunc ? 1 : 0)
+            if (isPunc) while (pos < text.length && (WRAP_CHARS.includes(text[pos]) || PUNC_REGEX.test(text[pos]))) pos++
+
+            if (pos > 0 && pos < text.length) {
+                // Ensure the second half isn't just punctuation
+                const remaining = text.slice(pos)
+                const hasContent = [...remaining].some((c) => !/\s/.test(c) && !PUNC_REGEX.test(c) && !WRAP_CHARS.includes(c))
+
+                if (hasContent) {
+                    bestDist = score
+                    best = pos
+                }
+            }
+        }
+    }
+    return best
 }
 
 export const VIRTUAL_BREAK_CHAR = "[_VB]"

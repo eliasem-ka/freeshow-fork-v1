@@ -4,7 +4,9 @@
     import { downloadOnlineMedia, getExtension, getMediaType } from "../../helpers/media"
     import Image from "../../media/Image.svelte"
     import Video from "../../media/Video.svelte"
+    import MediaLayerSlot from "./MediaLayerSlot.svelte"
 
+    export let outputId: string = ""
     export let path: string
     export let path2 = ""
     export let data: OutBackground = {}
@@ -12,17 +14,31 @@
     export let animationStyle = ""
     export let mediaStyle: MediaStyle = {}
     export let mirror = false
+    export let fadingOut = false
+    // decoded in a shared media window; fixed at mount so a playing video never moves between the two
+    export let layerable = false
+    export let pauseCenter = false
 
-    export let volume = 1
     export let video: HTMLVideoElement | null = null
-    export let videoData: any = { paused: false, muted: true, duration: 0, loop: false }
+    // for previews that are not outputted
+    export let videoData: any = { paused: false, muted: true, duration: 0, loop: data.loop === true }
     export let videoTime = 0
 
     $: extension = getExtension(path)
     $: type = data.type || getMediaType(extension)
 
+    let layered: boolean | null = null
+    $: if (layered === null && type) layered = layerable && type === "video" && typeof path === "string" && !!path && !path.startsWith("http")
+
+    let currentSyncPath = ""
+    $: if (typeof path === "string") {
+        if (path.startsWith("http")) currentSyncPath = path
+        else currentSyncPath = path
+    }
+
     $: if (typeof path === "string" && path.startsWith("http")) download()
     async function download() {
+        currentSyncPath = path
         path = await downloadOnlineMedia(path)
     }
 
@@ -49,9 +65,11 @@
 </script>
 
 {#key retryCount}
-    {#if type === "video"}
+    {#if type === "video" && layered}
+        <MediaLayerSlot {outputId} {path} {mediaStyle} startAt={data.startAt || 0} on:loaded />
+    {:else if type === "video"}
         <div class="video">
-            <Video {path} bind:video bind:videoData bind:videoTime startAt={data.startAt} {mediaStyle} {animationStyle} {mirror} {volume} on:loaded on:ended on:error={reload} />
+            <Video {outputId} {path} syncPath={currentSyncPath || path} bind:video bind:videoData bind:videoTime startAt={data.startAt} {mediaStyle} {animationStyle} {mirror} {fadingOut} {pauseCenter} on:loaded on:ended on:error={reload} />
         </div>
     {:else if type === "image"}
         <div class="image" style="height: 100%;{animationStyle}">

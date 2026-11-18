@@ -3,18 +3,21 @@ import type { ContentProviderId } from "../../electron/contentProviders/base/typ
 import { OUTPUT, STARTUP } from "../../types/Channels"
 import { Main } from "../../types/IPC/Main"
 import { checkStartupActions } from "../components/actions/actions"
+import { syncIcsCalendars } from "../components/drawer/calendar/calendars"
 import { getTimeFromInterval } from "../components/helpers/time"
 import { requestMain, requestMainMultiple, sendMain, sendMainMultiple } from "../IPC/main"
 import { cameraManager } from "../media/cameraManager"
-import { activePopup, alertMessage, cachePath, cloudSyncData, contentProviderData, currentWindow, dataPath, deviceId, driveKeys, isDev, loaded, loadedState, os, providerConnections, shows, special, version, windowState } from "../stores"
+import { activePopup, activeProfile, alertMessage, cachePath, cloudSyncData, contentProviderData, currentWindow, dataPath, deviceId, driveKeys, isDev, isOptimizedMode, loaded, loadedState, os, outputs, profiles, providerConnections, shows, special, version, windowState } from "../stores"
 import { startTracking } from "./analytics"
+import { setupCloudSync } from "./cloudSync"
 import { wait, waitUntilValueIsDefined } from "./common"
 import { getDefaultElements } from "./createData"
 import { setLanguage } from "./language"
 import { storeSubscriber } from "./listeners"
 import { autoOpenLastUsedProfile, openProfileByName } from "./profile"
 import { receiveOUTPUTasOUTPUT, remoteListen, setupMainReceivers } from "./receivers"
-import { destroy, receive, send } from "./request"
+import { renderSignatureHook } from "./renderSignature"
+import { destroy, receive, send, setBeforeOutputSend } from "./request"
 import { save, unsavedUpdater } from "./save"
 
 let initialized = false
@@ -40,7 +43,8 @@ export async function startup() {
             if (type) loaded.set(true)
 
             if (type === "pdf") return
-            if (type === "output") {
+            // a media window takes the same data as an output
+            if (type === "output" || type === "media") {
                 startupOutput()
                 return
             }
@@ -51,6 +55,8 @@ export async function startup() {
         },
         "startup"
     )
+
+    window.api.send(STARTUP, { channel: "READY" })
 }
 
 async function startupMain() {
@@ -66,9 +72,14 @@ async function startupMain() {
     if (startupProfile) openProfileByName(startupProfile)
     else autoOpenLastUsedProfile()
 
+    // before storeSubscriber, so the signatures see every message
+    setBeforeOutputSend(renderSignatureHook)
     storeSubscriber()
     remoteListen()
-    checkStartupActions()
+
+    const hasProfiles = Object.keys(get(profiles)).filter((a) => a !== "admin").length > 0
+    if (!hasProfiles || get(activeProfile) !== null) checkStartupActions()
+
     startTracking()
     contentProviderSync(true)
 
@@ -79,10 +90,14 @@ async function startupMain() {
     // }
 
     await wait(2000)
+
     autoBackup()
     await wait(3000)
+
     unsavedUpdater()
+    windowFocusListener()
     cameraManager.initializeCameraWarming()
+    syncIcsCalendars()
 
     // CHECK LISTENERS
     // console.log(window.api.getListeners())
@@ -92,9 +107,32 @@ async function startupMain() {
     setInterval(() => checkRamUsage(), 600000)
 }
 
+// window focus state
+function windowFocusListener() {
+    if (typeof window === "undefined") return
+
+    const updateFocus = () => {
+        if (document.hasFocus()) document.body.classList.remove("unfocused")
+        else document.body.classList.add("unfocused")
+    }
+
+    window.addEventListener("focus", updateFocus)
+    window.addEventListener("blur", updateFocus)
+    updateFocus()
+}
+
+let performanceMode = false
 async function checkRamUsage() {
     const ram = await requestMain(Main.CHECK_RAM_USAGE)
-    if (ram && (ram.performanceMode ? ram.performanceMode !== get(special).optimizedMode : get(special).optimizedMode)) special.set({ ...get(special), optimizedMode: ram.performanceMode })
+    performanceMode = ram?.performanceMode ?? performanceMode
+    checkOptimizedMode()
+}
+
+export function checkOptimizedMode() {
+    let shouldBeEnabled = get(special).optimizedMode
+    if (performanceMode) shouldBeEnabled = true
+    if (Object.values(get(outputs) || {}).some((o) => !!o?.rtmpData?.streaming || !!o?.webrtcData?.streaming)) shouldBeEnabled = true
+    isOptimizedMode.set(shouldBeEnabled)
 }
 
 function autoBackup() {
@@ -106,26 +144,34 @@ function autoBackup() {
     const minTimeToBackup = getTimeFromInterval(interval)
 
     if (now - lastBackup > minTimeToBackup) {
-        // 20% chance of backing up all shows as well (just in case)
-        save(false, { backup: true, isAutoBackup: true, backupShows: Math.random() < 0.2 })
+        save(false, { backup: true, isAutoBackup: true })
     }
 }
 
 const lastProviderSyncs: Partial<Record<ContentProviderId, number>> = {}
-export function contentProviderSync(startup = false, remainingOnly = false) {
+export async function contentProviderSync(startup = false, remainingOnly = false) {
     const isCloudSyncEnabled = get(cloudSyncData).enabled && get(cloudSyncData).id
 
+    if (isCloudSyncEnabled && !remainingOnly) {
+        setupCloudSync(startup)
+        return
+    }
+
+    // on startup, wait until data is loaded
+    if (!Object.keys(get(shows)).length) {
+        await waitUntilValueIsDefined(() => get(loadedState).includes("synced_settings"), 200, 8000) // same await in getStoredData
+        await waitUntilValueIsDefined(() => Object.keys(get(shows)).length, 50, 2000)
+    }
+
     const providers = [
-        { providerId: "planningcenter" as ContentProviderId, scope: "services", data: get(contentProviderData).planningcenter?.syncFolderIds || [], autoSync: get(contentProviderData).planningcenter?.autoSync !== false },
+        { providerId: "planningcenter" as ContentProviderId, scope: "services", data: { syncFolderIds: get(contentProviderData).planningcenter?.syncFolderIds || [] }, autoSync: get(contentProviderData).planningcenter?.autoSync !== false },
         { providerId: "churchApps" as ContentProviderId, scope: "plans", data: { shows: get(shows), categories: get(contentProviderData).churchApps?.syncCategories || [] } },
-        { providerId: "amazinglife" as ContentProviderId, scope: "openid profile email" }
+        { providerId: "amazinglife" as ContentProviderId, scope: "openid profile email" },
+        { providerId: "onstage" as ContentProviderId, scope: "presenter", data: get(contentProviderData).onstage || {}, autoSync: get(contentProviderData).onstage?.autoSync !== false }
     ]
 
     providers.forEach(({ providerId, scope, data, autoSync }) => {
         if (startup && autoSync === false) return
-
-        // don't run Planning Center sync right away on startup if cloud sync is enabled
-        if (providerId === "planningcenter" && startup && isCloudSyncEnabled && !remainingOnly) return
 
         // make sure the same provider does not run multiple times at once
         const now = Date.now()
@@ -156,7 +202,20 @@ function getMainData() {
         [Main.GET_CACHE_PATH]: (a) => cachePath.set(a || ""),
         [Main.DEVICE_ID]: (a) => deviceId.set(a || ""),
         [Main.MAXIMIZED]: (a) => windowState.set({ ...get(windowState), maximized: a ?? false }),
-        [Main.DATA_PATH]: (a) => (a ? dataPath.set(a) : null)
+        [Main.DATA_PATH]: (a) => (a ? dataPath.set(a) : null),
+        // get connected providers, even before the first sync of the session
+        [Main.PROVIDER_CONNECTIONS]: (a) => {
+            if (!a) return
+            providerConnections.update((c) => {
+                Object.keys(a).forEach((providerId) => {
+                    // churchApps is handled separately, due to cloud sync
+                    if (providerId === "churchApps") return
+
+                    c[providerId as ContentProviderId] = true
+                })
+                return c
+            })
+        }
     })
 }
 

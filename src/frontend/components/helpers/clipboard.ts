@@ -4,6 +4,7 @@ import { Main } from "../../../types/IPC/Main"
 import type { Clipboard } from "../../../types/Main"
 import type { Folder, Project } from "../../../types/Projects"
 import type { Item } from "../../../types/Show"
+import { removeOutputAudioChannel } from "../../audio/routing/audioRoutingInit"
 import { getProjectsInFolder } from "../../converters/project"
 import { sendMain } from "../../IPC/main"
 import {
@@ -18,6 +19,7 @@ import {
     activeStage,
     audioFolders,
     audioPlaylists,
+    audioRouting,
     audioStreams,
     categories,
     clipboard,
@@ -41,6 +43,7 @@ import {
     projects,
     projectTemplates,
     refreshEditSlide,
+    scenes,
     scriptures,
     scriptureSettings,
     selectAllAudio,
@@ -60,6 +63,7 @@ import {
 import { newToast, setStatus, triggerFunction } from "../../utils/common"
 import { translateText } from "../../utils/language"
 import { confirmCustom } from "../../utils/popup"
+import { copyFromTextField, cutFromTextField, isFormField } from "../../utils/shortcutsHelper"
 import { removeSlide } from "../context/menuClick"
 import { deleteTimer } from "../drawer/timers/timers"
 import { updateSortedStageItems } from "../edit/scripts/itemHelpers"
@@ -68,14 +72,22 @@ import { activeEdit } from "./../../stores"
 import { clone, keysToID, removeDeleted, removeDuplicates } from "./array"
 import { pasteText } from "./caretHelper"
 import { history } from "./history"
+import { deleteStore } from "./historyStores"
 import { getFileName, removeExtension } from "./media"
+import { updateActiveSceneOutputs } from "./output"
 import { select } from "./select"
 import { loadShows } from "./setShow"
-import { checkName, getLayoutRef, removeTemplatesFromShow } from "./show"
+import { checkName, getLayoutRef, removeTemplatesFromShow, updateShowsList } from "./show"
 import { _show } from "./shows"
 
 export function copy(clip: Clipboard | null = null, getData = true, shouldDuplicate = false) {
     let copyData: Clipboard | null = clip
+
+    const activeField = document.activeElement
+    if (!clip && isFormField(activeField)) {
+        copyFromTextField(activeField)
+        return
+    }
 
     if (window.getSelection()?.toString()) {
         navigator.clipboard.writeText(window.getSelection()!.toString())
@@ -113,6 +125,7 @@ export function copy(clip: Clipboard | null = null, getData = true, shouldDuplic
 
 // pasting text in editbox is it's own function
 export function paste(clip: Clipboard | null = null, extraData: any = {}, customElem: HTMLElement | null = null, isDuplicating = false) {
+    const hasCustomClip = !!clip
     if (!clip) clip = get(clipboard)
     let activeElem = document.activeElement
 
@@ -122,13 +135,21 @@ export function paste(clip: Clipboard | null = null, extraData: any = {}, custom
     // edit item has its own paste function
     if (activeElem?.closest(".editItem")) return
 
-    if (customElem?.closest(".edit")) activeElem = customElem
-    if (activeElem?.closest(".edit")) {
+    if (!isDuplicating && customElem?.closest(".edit")) activeElem = customElem
+    if (!isDuplicating && activeElem?.closest(".edit")) {
         pasteText(activeElem)
         return
     }
 
+    if (!hasCustomClip && isFormField(activeElem)) return
+
     if (clip.id === null) return
+
+    // certain clipboard items are only valid on specific "pages"
+    const currentPage = get(activePage)
+    if (clip.id === "stage_item" && currentPage !== "stage") return
+    if (clip.id === "item" && currentPage !== "edit") return
+    if ((clip.id === "slide" || clip.id === "group") && currentPage !== "edit" && currentPage !== "show") return
 
     // custom media paste: only paste on selected ones
     if (clip.id === "media") {
@@ -151,6 +172,12 @@ export function paste(clip: Clipboard | null = null, extraData: any = {}, custom
 }
 
 export function cut(clip: Clipboard | null = null) {
+    const activeField = document.activeElement
+    if (!clip && isFormField(activeField)) {
+        cutFromTextField(activeField)
+        return
+    }
+
     // Handle text directly
     if (window.getSelection()?.toString()) {
         const selection = window.getSelection()!
@@ -217,7 +244,9 @@ export function selectAll(data: any = {}) {
     }
 
     let selectId = data.id || get(selected)?.id || get(focusedArea)
-    if (!selectId) {
+    if (get(activePage) === "stage" && get(activeStage)?.id) {
+        selectId = "stage_items"
+    } else if (!selectId) {
         if (get(activeEdit) && get(activePage) === "edit") selectId = "edit_items"
         else if (get(activeStage) && get(activePage) === "stage") selectId = "stage_items"
         else if (get(activeDrawerTab) === "calendar" && get(drawerTabsData).calendar?.activeSubTab !== "timers") selectId = "events"
@@ -396,6 +425,11 @@ const selectActions = {
 
         selected.set({ id: "template", data: newSelection })
     },
+    scene: () => {
+        let newSelection: any[] = Object.entries(get(scenes)).map(([id, a]) => ({ ...a, id }))
+        newSelection = newSelection.map(({ id }) => id)
+        selected.set({ id: "scene", data: newSelection })
+    },
     media: () => selectAllMedia.set(true),
     audio: () => selectAllAudio.set(true),
     timeline: () => triggerFunction("timeline_selectAll")
@@ -447,7 +481,7 @@ const copyActions = {
                 if (!ref[a.index]) return ""
 
                 // get layout
-                if (a.index !== undefined) layouts.push(ref[a.index].data)
+                if (a.index !== undefined) layouts.push(clone(ref[a.index].data || {}))
 
                 return a.id || (a.index !== undefined ? ref[a.index].id : "")
             })
@@ -472,9 +506,9 @@ const copyActions = {
             // this should never be here
             delete slide.children
 
-            const parent = ref.find((a) => a.id === slide.id)?.parent || ""
+            const parent = ref.find((a) => a.id === slide.id)?.parent
             // check that parent is not copied
-            if (ids.includes(parent)) return slide
+            if (ids.includes(parent?.id)) return slide
 
             // slide.group = ""
             slide.oldChild = slide.id
@@ -505,6 +539,10 @@ const copyActions = {
     template: (data: any) => {
         if (!Array.isArray(data)) return []
         return data.map((id: string) => clone(get(templates)[id]))
+    },
+    scene: (data: any) => {
+        if (!Array.isArray(data)) return []
+        return data.map((id: string) => clone(get(scenes)[id]))
     },
     effect: (data: any) => {
         if (!Array.isArray(data)) return []
@@ -569,7 +607,8 @@ const pasteActions = {
         history({ id: "UPDATE", newData: { data: items, key: "slides", keys: [ref.id], subkey: "items", index: -1 }, oldData: { id: get(activeShow)!.id }, location: { page: "edit", id: "show_key" } })
     },
     slide: (data: any, { index }: any = {}, isDuplicating: boolean = false) => {
-        if (!data) return
+        if (!data?.slides) return
+
         data = clone(data)
         const copiedIds: string[] = data.slides.map((a) => a.id)
         const newSlides: any[] = []
@@ -610,15 +649,9 @@ const pasteActions = {
     },
     group: (data: any, extraData: any = {}, isDuplicating: boolean = false) => pasteActions.slide(data, extraData, isDuplicating),
     overlay: (data: any) => pasteDrawerItem(data, "overlay"),
+    effect: (data: any) => pasteDrawerItem(data, "effect"),
     template: (data: any) => pasteDrawerItem(data, "template"),
-    effect: (data: any) => {
-        data?.forEach((effect) => {
-            const newEffect = clone(effect)
-            delete newEffect.isDefault
-            newEffect.name += " (2)"
-            history({ id: "UPDATE", newData: { data: newEffect }, location: { page: "drawer", id: "effect" } })
-        })
-    },
+    scene: (data: any) => pasteDrawerItem(data, "scene"),
     // project items
     show: (data: any) => {
         const isTemplate = !!get(editingProjectTemplate)
@@ -702,7 +735,7 @@ const deleteActions = {
         const showId = get(activeShow)?.id || ""
         const items = get(activeEdit).items || []
         const currentShow = get(showsCache)[showId]
-        if (currentShow.locked || currentShow?.slides?.[groupId || ""]?.locked) {
+        if (currentShow?.locked || currentShow?.slides?.[groupId || ""]?.locked) {
             newToast("output.state_locked")
             return
         }
@@ -732,15 +765,8 @@ const deleteActions = {
         history({ id: "SLIDES", oldData: { type: "delete_group", data: data.map(({ id }: any) => ({ id })) } })
     },
     action: (data: any) => {
-        // WIP history
-        data.forEach((selData) => {
-            actions.update((a) => {
-                delete a[selData.id]
-                return a
-            })
-
-            sendMain(Main.CLOSE_MIDI, { id: selData.id })
-        })
+        historyDelete("UPDATE", data, { updater: "action" })
+        data.forEach((selData) => sendMain(Main.CLOSE_MIDI, { id: selData.id }))
     },
     timer: (data: any) => {
         data.forEach((a) => {
@@ -749,24 +775,11 @@ const deleteActions = {
         })
     },
     global_timer: (data: any) => deleteActions.timer(data),
-    // TODO: history
     variable: (data: any) => {
-        variables.update((a) => {
-            data.forEach(({ id }) => {
-                delete a[id]
-            })
-
-            return a
-        })
+        data.forEach(({ id }) => deleteStore("variables", id))
     },
     interaction: (data: any) => {
-        // WIP history
-        interactions.update((a) => {
-            data.forEach(({ id }) => {
-                delete a[id]
-            })
-            return a
-        })
+        historyDelete("UPDATE", data, { updater: "interaction" })
     },
     interaction_input: (data: any) => {
         const id = get(openedInteractionId)
@@ -777,6 +790,26 @@ const deleteActions = {
 
             return a
         })
+    },
+    scene_overlay: (data: any) => {
+        const sceneId = get(activeEdit).id || ""
+        const scene = get(scenes)[sceneId]
+        if (!scene) return
+
+        const currentOverlays = clone(scene.content?.overlays || [])
+        const index = typeof data === "number" ? data : (data?.index ?? data?.[0]?.index)
+        if (index === undefined || index < 0 || index >= currentOverlays.length) return
+
+        currentOverlays.splice(index, 1)
+        const newContent = { ...clone(scene.content || {}), overlays: currentOverlays }
+        history({
+            id: "UPDATE",
+            newData: { key: "content", data: newContent },
+            oldData: { id: sceneId },
+            location: { page: "drawer", id: "scene_key" }
+        })
+
+        updateActiveSceneOutputs(sceneId)
     },
     audio_stream: (data: any) => {
         audioStreams.update((a) => {
@@ -844,6 +877,7 @@ const deleteActions = {
     category_templates: (data: any) => historyDelete("UPDATE", data, { updater: "category_templates" }),
     player: (data: any) => historyDelete("UPDATE", data, { updater: "player_video" }),
     overlay: (data: any) => historyDelete("UPDATE", data, { updater: "overlay" }),
+    scene: (data: any) => historyDelete("UPDATE", data, { updater: "scene" }),
     effect: (data: any) => historyDelete("UPDATE", data, { updater: "effect" }),
     template: async (data: any) => {
         const ids = data.map((id) => id)
@@ -960,29 +994,32 @@ const deleteActions = {
         history({ id: "UPDATE", newData: { key: "shows", data: projectItems.filter((_a, i) => !indexes.includes(i)) }, oldData: { id: projectId }, location: { page: "show", id: isTemplate ? "project_template" : "project_key" } })
     },
     layout: (data: any) => {
-        if (data.length < _show().layouts().get().length) {
-            data.forEach((id: string) => {
-                history({ id: "UPDATE", newData: { id: get(activeShow)?.id }, oldData: { key: "layouts", subkey: id }, location: { page: "show", id: "show_layout" } })
-            })
+        if (!data.length) return
 
-            // remove from active project if any
-            projects.update((a) => {
-                if (!a[get(activeProject) || ""]?.shows) return a
-
-                data.forEach((layoutId: string) => {
-                    a[get(activeProject) || ""].shows.forEach((show) => {
-                        if (show.layout !== layoutId) return
-
-                        delete show.layout
-                        delete show.layoutInfo
-                    })
-                })
-
-                return a
-            })
-        } else {
-            newToast("error.keep_one_layout")
+        // keep at least one layout
+        if (data.length === _show().layouts().get().length) {
+            data = data.slice(0, -1)
         }
+
+        data.forEach((id: string) => {
+            history({ id: "UPDATE", newData: { id: get(activeShow)?.id }, oldData: { key: "layouts", subkey: id }, location: { page: "show", id: "show_layout" } })
+        })
+
+        // remove from active project if any
+        projects.update((a) => {
+            if (!a[get(activeProject) || ""]?.shows) return a
+
+            data.forEach((layoutId: string) => {
+                a[get(activeProject) || ""].shows.forEach((show) => {
+                    if (show.layout !== layoutId) return
+
+                    delete show.layout
+                    delete show.layoutInfo
+                })
+            })
+
+            return a
+        })
     },
     video_subtitle: (data: any) => {
         const index = data.index
@@ -1023,6 +1060,7 @@ const deleteActions = {
     output: (data: any) => {
         data.forEach(({ id }) => {
             history({ id: "UPDATE", newData: { id }, location: { page: "settings", id: "settings_output" } })
+            removeOutputAudioChannel(id)
         })
 
         currentOutputSettings.set(Object.keys(get(outputs))[0])
@@ -1030,6 +1068,25 @@ const deleteActions = {
     profile: (data: any) => {
         data.forEach(({ id }) => {
             history({ id: "UPDATE", newData: { id }, location: { page: "settings", id: "settings_profile" } })
+        })
+
+        // clear admin user also if all other users are deleted
+        const profileList = Object.keys(get(profiles)).filter((id) => id !== "admin")
+        if (!profileList.length) profiles.set({})
+    },
+    audio_channel: (data: any) => {
+        const channelId = data?.[0]?.id || data?.[0]
+        if (!channelId) return
+        audioRouting.update((c) => {
+            if (!c?.channels?.length) return c
+
+            const list = c.channels
+            const index = list.findIndex((m) => m.id === channelId)
+            if (index <= 0) return c // First channel ("main") cannot be deleted
+
+            list.splice(index, 1)
+            const connections = c.connections.filter((conn) => conn.from !== channelId && conn.to !== channelId)
+            return { ...c, channels: list, connections }
         })
     },
     tag: (data: any) => {
@@ -1092,6 +1149,7 @@ const duplicateActions = {
             delete newShowRef.index
             if (!newShowRef.type) newShowRef.type = "show"
             if (newShowRef.type === "show") delete newShowRef.name
+            else if (newShowRef.type === "section") newShowRef.id = uid()
             return newShowRef
         })
 
@@ -1132,22 +1190,27 @@ const duplicateActions = {
         history({ id: "UPDATE", newData: { data: stage.items, key: "items" }, oldData: { id: stageId }, location: { page: "stage", id: "stage_item_content" } })
         updateSortedStageItems()
     },
-    layout: (data: any) => {
+    layout: (data?: { name?: string; id?: string; newId?: string }[]) => {
         const showId = get(activeShow)?.id
         if (!showId) return
 
-        const layoutId = data?.[0] || get(showsCache)[showId]?.settings?.activeLayout
+        const layoutId = data?.[0]?.id || get(showsCache)[showId]?.settings?.activeLayout
         if (!layoutId) return
 
         const newLayout = clone(get(showsCache)[showId]?.layouts?.[layoutId])
         if (!newLayout) return
 
-        newLayout.name += " 2"
-        history({ id: "UPDATE", newData: { key: "layouts", subkey: uid(), data: newLayout }, oldData: { id: get(activeShow)?.id }, location: { page: "show", id: "show_layout" } })
+        const customName = data?.[0]?.name
+        if (customName) newLayout.name = customName
+        else newLayout.name += " 2"
+
+        const newId = data?.[0]?.newId || uid()
+        history({ id: "UPDATE", newData: { key: "layouts", subkey: newId, data: newLayout }, oldData: { id: get(activeShow)?.id }, location: { page: "show", id: "show_layout" } })
     },
     folder: (data: any) => {
         // duplicate projects folder and all of the projects inside
-        // TODO: history
+        // intentionally no undo: the recursive tree duplication has no batch history entry,
+        // and per-item entries could partially undo into orphaned children (deleting the copy has undo)
         const newProjects: Project[] = []
 
         folders.update((a) => {
@@ -1173,7 +1236,9 @@ const duplicateActions = {
 
                 const projectList = removeDeleted(keysToID(get(projects))).filter((project) => project.parent === oldParent)
                 projectList.forEach((project) => {
-                    newProjects.push({ ...clone(project), parent: newParent })
+                    const cloned = clone(project)
+                    delete cloned.origin
+                    newProjects.push({ ...cloned, parent: newParent })
                 })
             }
 
@@ -1189,14 +1254,13 @@ const duplicateActions = {
         })
     },
     project: (data: any) => {
-        // TODO: history
-        projects.update((a) => {
-            data.forEach((project) => {
-                const newProject = clone(a[project.id])
-                a[uid()] = { ...newProject, name: newProject.name + " 2" }
-                return a
-            })
-            return a
+        data.forEach((selData) => {
+            const project = clone(get(projects)[selData.id])
+            if (!project) return
+
+            delete project.origin
+            const id = uid()
+            history({ id: "UPDATE", newData: { data: project, replace: { name: project.name + " 2" } }, oldData: { id }, location: { page: "show", id: "project" } })
         })
     },
     theme: (data: any) => {
@@ -1295,7 +1359,7 @@ const duplicateActions = {
     }
 }
 
-function pasteDrawerItem(data: any, type: "overlay" | "template") {
+function pasteDrawerItem(data: any, type: "overlay" | "effect" | "template" | "scene") {
     data?.forEach((item) => {
         const newItem = clone(item)
         delete newItem.isDefault
@@ -1395,18 +1459,32 @@ function historyDelete(id, data, { updater } = { updater: "" }) {
 
 async function duplicateShows(selectedData: any) {
     await loadShows(selectedData.map(({ id }) => id))
-    selectedData.forEach(({ id }) => {
-        const show = clone(get(showsCache)[id])
-        if (!show) return
-
-        show.name = checkName(show.name + " 2")
-        show.timestamps.modified = new Date().getTime()
-
-        const newId = uid()
-        history({ id: "UPDATE", newData: { data: show, remember: { project: id === "show" ? get(activeProject) : null } }, oldData: { id: newId }, location: { page: "show", id: "show" } })
-
-        if (selectedData.length === 1) {
-            activeRename.set("show_drawer_" + newId)
-        }
+    let newIds: string[] = []
+    selectedData.forEach(async ({ id }) => {
+        const projectId = id === "show" ? get(activeProject) : null
+        const newId = await duplicateShow(id, projectId, true)
+        if (newId !== id) newIds.push(newId)
     })
+
+    setTimeout(() => {
+        // update list instantly
+        updateShowsList(get(shows))
+
+        // activate rename
+        if (newIds.length === 1) activeRename.set("show_drawer_" + newIds[0])
+    })
+}
+
+export async function duplicateShow(id: string, projectId?: string | null, alreadyLoaded: boolean = false): Promise<string> {
+    if (!alreadyLoaded) await loadShows([id])
+    const show = clone(get(showsCache)[id])
+    if (!show) return id
+
+    show.name = checkName(show.name)
+    if (!show.timestamps) show.timestamps = { created: Date.now(), modified: Date.now(), used: null }
+    else show.timestamps.modified = Date.now()
+
+    const newId = uid()
+    history({ id: "UPDATE", newData: { data: show, remember: { project: projectId || null } }, oldData: { id: newId }, location: { page: "show", id: "show" } })
+    return newId
 }

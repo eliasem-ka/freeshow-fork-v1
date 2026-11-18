@@ -7,7 +7,7 @@
     import T from "../helpers/T.svelte"
     import { clone } from "../helpers/array"
     import { history } from "../helpers/history"
-    import { getLayoutRef } from "../helpers/show"
+    import { getLayoutRef, isSlideLocked } from "../helpers/show"
     import { _show } from "../helpers/shows"
     import { getStyles } from "../helpers/style"
     import FloatingInputs from "../input/FloatingInputs.svelte"
@@ -104,7 +104,7 @@
     const getItemsByIndex = (array: number[]): Item[] => array.map((i) => allSlideItems[i])
 
     // select active items or all items
-    $: items = $activeEdit.items.length ? getItemsByIndex($activeEdit.items.sort((a, b) => a - b)) : allSlideItems
+    $: items = $activeEdit.items.length ? getItemsByIndex([...$activeEdit.items].sort((a, b) => a - b)) : allSlideItems
     // select last item
     $: item = items?.length ? items[items.length - 1] : null
 
@@ -216,6 +216,8 @@
                 $activeEdit.items.forEach((i: number) => {
                     if (!a[$activeEdit.id!].items[i]?.lines) return
 
+                    delete a[$activeEdit.id!].items[i].autoFontSize
+
                     a[$activeEdit.id!].items[i].lines.forEach((line: Line) => {
                         line.text?.forEach((text) => {
                             text.style = ""
@@ -271,7 +273,7 @@
         items.forEach((item) => {
             if (item.lines) {
                 let text = item.lines.map((a) => {
-                    return a.text.map((a) => {
+                    return (a.text || []).map((a) => {
                         a.style = ""
                         return a
                     })
@@ -294,7 +296,7 @@
             })
         }
 
-        let deleteKeys = ["auto", "textFit", "specialStyle", "scrolling"]
+        let deleteKeys = ["textFit", "specialStyle", "scrolling"]
         // reset timer/icon/media/mirror etc. style
         if (item && item[item.type || ""]) deleteKeys = [item.type!]
 
@@ -360,11 +362,7 @@
     let profile = getAccess("shows")
 
     $: currentShow = $showsCache[$activeShow?.id || ""]
-    $: isSlideLockedFn = () => {
-        const slideId = ref[activeSlide]?.parent?.id || ref[activeSlide]?.id
-        return !!currentShow?.slides?.[slideId]?.locked
-    }
-    $: isLocked = activeId ? false : currentShow?.locked || isSlideLockedFn() || profile.global === "read" || profile[currentShow?.category || ""] === "read"
+    $: isLocked = activeId ? false : currentShow?.locked || isSlideLocked($activeShow?.id || "", ref[activeSlide]?.id || "", currentShow) || profile.global === "read" || profile[currentShow?.category || ""] === "read"
     // $: isDefault = $activeEdit.type === "overlay" ? $overlays[activeId || ""]?.isDefault : $activeEdit.type === "template" ? $templates[activeId || ""]?.isDefault : false
     $: overflowHidden = !!(isShow || $activeEdit.type === "template" || $activeEdit.type === "overlay")
 
@@ -391,7 +389,6 @@
     //     function trimItems(items: Item[]) {
     //         items.forEach((item) => {
     //             if (item.type === "text") delete item.type
-    //             if (item.auto === false) delete item.auto
 
     //             item.lines?.forEach((line, lineIndex) => {
     //                 line.align = (line.align || "").replaceAll(";;", ";")
@@ -406,6 +403,9 @@
     //         return items
     //     }
     // }
+
+    // custom local fonts (likely from PPT import)
+    $: customLocalFonts = showIsActive ? $showsCache[$activeEdit?.id || $activeShow?.id || ""]?.settings?.customFonts || [] : []
 </script>
 
 <svelte:window on:keydown={keydown} />
@@ -417,7 +417,9 @@
         {#if active === "text"}
             <div class="content">
                 {#if item}
-                    <BoxStyle id={item?.type || "text"} bind:allSlideItems bind:item />
+                    {#key item.type || "text"}
+                        <BoxStyle id={item?.type || "text"} bind:allSlideItems bind:item {customLocalFonts} />
+                    {/key}
                 {:else}
                     <Center faded>
                         <T id="empty.items" />

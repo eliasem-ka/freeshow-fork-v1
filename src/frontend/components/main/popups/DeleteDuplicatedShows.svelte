@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { Show } from "../../../../types/Show"
+    import type { Show } from "../../../../types/Show"
     import { activePopup, popupData, shows, showsCache } from "../../../stores"
     import { getTextLines } from "../../edit/scripts/textStyle"
     import { history } from "../../helpers/history"
@@ -200,7 +200,7 @@
                 <p style="display: flex;align-items: center;justify-content: space-between;padding-bottom: 5px;">
                     <span>{show.name || "—"}</span>
                     <!-- creation/modified date! -->
-                    <span style="opacity: 0.5;font-size: 0.7em;">{dateToString(show.timestamps?.modified || "", true)}</span>
+                    <span style="opacity: 0.5;font-size: 0.7em;">{dateToString(show.timestamps?.modified || "")}</span>
                 </p>
 
                 {#if loadedTexts[i]}

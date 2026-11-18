@@ -3,10 +3,11 @@
     import { translateText } from "../../../utils/language"
     import Icon from "../../helpers/Icon.svelte"
     import T from "../../helpers/T.svelte"
-    import { joinTimeBig } from "../../helpers/time"
+    import { getWeekday, joinTimeBig } from "../../helpers/time"
     import Button from "../../inputs/Button.svelte"
     import MaterialDropdown from "../../inputs/MaterialDropdown.svelte"
     import MaterialPopupButton from "../../inputs/MaterialPopupButton.svelte"
+    import CalendarsManagement from "../calendar/CalendarsManagement.svelte"
     import CreateCalendarShow from "../calendar/CreateCalendarShow.svelte"
     import Day from "../calendar/Day.svelte"
     import { getSelectedEvents } from "../calendar/calendar"
@@ -19,8 +20,6 @@
     let currentEvents: any[] = []
     $: if ($activeDays || $events) currentEvents = getSelectedEvents()
 
-    // $: currentEvents = currentEvents.filter((a) => a.type === type)
-
     function updateSpecial(value, key) {
         special.update((a) => {
             a[key] = value
@@ -29,9 +28,9 @@
     }
 
     // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/Locale/getWeekInfo
-    const firstWeekDayOptions = [
-        { value: "1", label: translateText("weekday.1"), style: "text-transform: capitalize;" },
-        { value: "7", label: translateText("weekday.7"), style: "text-transform: capitalize;" }
+    $: firstWeekDayOptions = [
+        { value: "1", label: getWeekday(1), style: "text-transform: capitalize;" },
+        { value: "7", label: getWeekday(7), style: "text-transform: capitalize;" }
     ]
 
     $: if (!$special.firstDayOfWeek) getPreferredFirstDay()
@@ -49,6 +48,8 @@
         {#if type === "event"}
             <!-- create show options -->
             <MaterialPopupButton label="calendar.add_slides_from_show" style="margin-top: 5px;" value={$calendarAddShow} name={$shows[$calendarAddShow]?.name || "—"} popupId="select_show" icon="showIcon" data={{ action: "select_show", location: "calendar" }} on:change={(e) => calendarAddShow.set(e.detail)} allowEmpty />
+
+            <CalendarsManagement />
         {/if}
     </main>
 {:else if type === "event"}

@@ -1,7 +1,5 @@
 <script lang="ts">
     import { createEventDispatcher, onMount } from "svelte"
-    import { cubicOut } from "svelte/easing"
-    import { fade, fly } from "svelte/transition"
     import type { DropdownOptions } from "../../../types/Input"
     import { dictionary } from "../../stores"
     import { translateText } from "../../utils/language"
@@ -23,6 +21,7 @@
     export let allowEmpty = false
     export let flags = false
     export let onlyArrow = false
+    export let inline = false
 
     export let addNew: string | null = null
     export let allowDeleting = false
@@ -99,7 +98,7 @@
     }
 
     function handleClickOutside(event: MouseEvent) {
-        if (dropdownEl && !dropdownEl.contains(event.target as Node)) {
+        if (dropdownEl && !dropdownEl.contains(event.target as Node) && !event.composedPath().includes(dropdownEl)) {
             open = false
             addNewTextbox = false
         }
@@ -234,24 +233,6 @@
         }
     })
 
-    function flyFade(node: Element, params = {}) {
-        const flyParams = { y: -8, duration: 80, easing: cubicOut, ...params }
-        const fadeParams = { duration: 80, ...params }
-
-        const flyConfig = fly(node, flyParams)
-        const fadeConfig = fade(node, fadeParams)
-
-        return {
-            delay: 0,
-            duration: Math.max(flyConfig.duration ?? 0, fadeConfig.duration ?? 0),
-            css: (t: number, u: number) => {
-                const flyStyle = flyConfig.css?.(t, u) ?? ""
-                const fadeStyle = fadeConfig.css?.(t, u) ?? ""
-                return `${flyStyle}; ${fadeStyle}`
-            }
-        }
-    }
-
     $: selected = options.find((o) => o.value === value)
     $: useVirtualList = options.length > 100
 
@@ -298,11 +279,12 @@
     $: hasValue = !!value || (value === "" && options[0]?.value === "")
 </script>
 
-<div class="textfield {disabled ? 'disabled' : ''}" style={$$props.style || null} class:flags class:onlyArrow bind:this={dropdownEl}>
+<div class="textfield {disabled ? 'disabled' : ''}" style={$$props.style || null} class:flags class:onlyArrow class:inline bind:this={dropdownEl}>
     <div class="background" />
 
     <div
-        class="input edit dropdown-trigger"
+        class="input edit dropdown-trigger {$$props.class || ''}"
+        id="#{value}"
         data-title="{translateText(label)}{selected ? `: <b>${selected.label || '—'}</b>` : ''}"
         role="button"
         tabindex={disabled ? undefined : 0}
@@ -323,12 +305,12 @@
                 {#if selected?.value !== undefined}{selected?.label || "—"}{:else if value}{value}{/if}
             </span>
         {/if}
-        <svg class="arrow {open ? 'open' : ''}" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg class="arrow {open ? 'open' : ''}" width={inline ? "16" : "24"} height={inline ? "16" : "24"} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M7 10l5 5 5-5" stroke="currentColor" stroke-width="2" />
         </svg>
     </div>
 
-    {#if !onlyArrow}
+    {#if !onlyArrow && !inline}
         <label for={id} class:selected={hasValue}>{@html translateText(label, $dictionary)}</label>
     {/if}
     <span class="underline" />
@@ -356,7 +338,7 @@
 
     {#if open}
         {#if useVirtualList}
-            <div class="dropdown virtual" style="max-height: {maxHeight}px" transition:flyFade>
+            <div class="dropdown virtual" style="max-height: {maxHeight}px">
                 <VirtualList items={options} height="{maxHeight}px" activeIndex={highlightedIndex} let:item={option}>
                     <li style="{option.data ? 'justify-content: space-between;' : ''}{option.style || ''}" role="option" aria-selected={option.value === value} class:selected={option.value === value} class:highlighted={options.indexOf(option) === highlightedIndex} on:click={(e) => selectOption(e, option.value)}>
                         {#if option.icon}<Icon id={option.icon} style="margin-right: 5px;" color={option.iconColor} boxed={!!option.iconColor} white />{/if}
@@ -393,7 +375,7 @@
                 {/if}
             </div>
         {:else}
-            <ul style="max-height: {maxHeight}px" class="dropdown" role="listbox" tabindex="-1" bind:this={scrollElem} transition:flyFade>
+            <ul style="max-height: {maxHeight}px" class="dropdown" role="listbox" tabindex="-1" bind:this={scrollElem}>
                 {#if allowEmpty}
                     <li style="opacity: 0.5;font-style: italic;" role="option" aria-selected={!value} class:selected={!value} class:highlighted={highlightedIndex < 0} on:click={() => selectOption(null, "")}>
                         {translateText("main.none")}
@@ -482,12 +464,24 @@
         width: 50px;
     }
 
+    .textfield.inline {
+        width: auto;
+        height: auto;
+        border-bottom: 0;
+    }
+
     .background {
         position: absolute;
         inset: 0;
         background-color: var(--primary-darkest);
         border-radius: 4px 4px 0 0;
         z-index: 0;
+    }
+
+    .textfield.inline .background {
+        background-color: rgb(0 0 0 / 0.4);
+        /* background: red; */
+        border-radius: 4px;
     }
 
     .textfield:not(:has(.dropdown)):not(:has(.remove:hover)):not(:disabled):hover .input {
@@ -508,6 +502,14 @@
         background: transparent;
         border: none;
         outline: none;
+    }
+
+    .textfield.inline .dropdown-trigger {
+        padding: 1px 5px;
+        font-weight: normal;
+
+        font-size: 0.85rem;
+        opacity: 0.9;
     }
 
     .remove {
@@ -539,6 +541,13 @@
     }
     .arrow.open {
         transform: translateY(-0.4rem) rotate(180deg);
+    }
+
+    .textfield.inline .arrow {
+        transform: initial;
+    }
+    .textfield.inline .arrow.open {
+        transform: rotate(180deg);
     }
 
     label {
@@ -607,7 +616,27 @@
         overflow-x: hidden;
         box-shadow: 0 4px 8px rgba(0, 0, 0, 0.25);
 
+        /* .popup size is set to 1.2em, reset that */
+        font-size: initial;
+
         border-bottom: 1px solid var(--primary-lighter);
+
+        animation: dropdownFlyFade 80ms cubic-bezier(0.33, 1, 0.68, 1);
+    }
+
+    .textfield.inline .dropdown {
+        min-width: 180px;
+    }
+
+    @keyframes dropdownFlyFade {
+        from {
+            opacity: 0;
+            transform: translateY(-8px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
     }
 
     /* virtual */
@@ -647,6 +676,10 @@
     }
     .dropdown li.selected {
         color: var(--secondary);
+    }
+
+    .textfield.inline .dropdown li {
+        padding: 0.4rem 0.75rem;
     }
 
     .dropdown .data {

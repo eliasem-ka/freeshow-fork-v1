@@ -7,21 +7,23 @@
     import { translate } from "../../util/helpers"
     import { GetLayout } from "../../util/output"
     import { send } from "../../util/socket"
-    import { _set, activeShow, activeTab, dictionary, isCleared, outLayout, outShow, outSlide, textCache } from "../../util/stores"
+    import { _set, active, activeShow, activeTab, dictionary, isCleared, outLayout, outShow, outSlide, textCache } from "../../util/stores"
     import Clear from "../show/Clear.svelte"
     import Slides from "../show/Slides.svelte"
     import AddGroups from "./AddGroups.svelte"
     import GroupsEdit from "./GroupsEdit.svelte"
     import TextEdit from "./TextEdit.svelte"
 
-    // Memoize layout calculation
-    $: layout = $outShow ? GetLayout($outShow, $outLayout) : null
-    $: _set("layout", layout)
+    $: isLoading = !$activeShow || ($active?.id ? $activeShow.id !== $active.id : false)
 
-    $: slideNum = $outSlide ?? -1
+    // Memoize layout calculation for active show
+    $: activeLayout = $activeShow ? GetLayout($activeShow, $activeShow?.settings?.activeLayout || Object.keys($activeShow?.layouts || {})[0] || "default") : null
+    $: _set("layout", activeLayout)
+
+    $: slideNum = $outShow?.id === $activeShow?.id ? ($outSlide ?? -1) : -1
 
     // Memoize totalSlides calculation
-    $: totalSlides = layout ? layout.length : 0
+    $: totalSlides = activeLayout ? activeLayout.length : 0
 
     let scrollElem: HTMLElement | undefined
     let lyricsScroll: any
@@ -114,6 +116,13 @@
         send("API:get_cleared")
     }
 
+    function navigate(action: "previous_slide" | "next_slide") {
+        send("API:" + action)
+
+        // next/previous might change the active show in the app (e.g. at first/last slide), sync with that (app watches for changes)
+        send("ACTIVE_SHOW", $activeShow?.id || "")
+    }
+
     // Cleanup scroll animation frame
     onDestroy(() => {
         if (scrollRaf !== null) {
@@ -123,7 +132,9 @@
 </script>
 
 <!-- GetLayout($activeShow, $activeShow?.settings?.activeLayout).length -->
-{#if $activeShow?.layouts}
+{#if isLoading}
+    <Center faded>{translate("remote.loading", $dictionary)}</Center>
+{:else if $activeShow?.layouts}
     <h2 class="header">{$activeShow.name || ""}</h2>
 
     {#if (groupsOpened || editOpened) && !($activeShow.id === $outShow?.id)}
@@ -157,32 +168,26 @@
             <Slides {dictionary} {scrollElem} on:click={(e) => playSlide(e.detail)} outSlide={slideNum} />
         </div>
 
-        {#if $activeShow.id === $outShow?.id || !$isCleared.all}
-            {#if $activeShow.id === $outShow?.id}
-                <div class="controls-section">
-                    <div class="buttons">
-                        {#key slideNum}
-                            <Clear outSlide={slideNum} />
-                        {/key}
-                    </div>
-
-                    <div class="slide-progress">
-                        <Button on:click={() => send("API:previous_slide")} disabled={slideNum <= 0} variant="outlined" center compact>
-                            <Icon id="previous" size={1.2} />
-                        </Button>
-                        <span class="counter">{slideNum + 1}/{totalSlides}</span>
-                        <Button on:click={() => send("API:next_slide")} disabled={slideNum + 1 >= totalSlides} variant="outlined" center compact>
-                            <Icon id="next" size={1.2} />
-                        </Button>
-                    </div>
+        {#if !$isCleared.all}
+            <div class="controls-section">
+                <div class="slide-progress">
+                    <!-- disabled={slideNum <= 0}  -->
+                    <Button on:click={() => navigate("previous_slide")} variant="outlined" center compact>
+                        <Icon id="previous" size={1.2} />
+                    </Button>
+                    <span class="counter">{slideNum < 0 ? 0 : slideNum + 1}/{totalSlides}</span>
+                    <!-- disabled={slideNum + 1 >= totalSlides} -->
+                    <Button on:click={() => navigate("next_slide")} variant="outlined" center compact>
+                        <Icon id="next" size={1.2} />
+                    </Button>
                 </div>
-            {:else}
+
                 <div class="buttons">
                     {#key slideNum}
                         <Clear outSlide={slideNum} />
                     {/key}
                 </div>
-            {/if}
+            </div>
         {:else}
             <div class="buttons">
                 {#if layouts.length > 1}
@@ -240,9 +245,9 @@
 
     .slide-progress :global(button) {
         min-width: 32px;
-        min-height: 32px !important;
+        min-height: 44px !important;
         padding: 2px 6px !important;
-        flex-shrink: 0;
+        flex: 1;
     }
 
     .slide-progress :global(button) :global(svg) {
@@ -250,9 +255,9 @@
     }
 
     .slide-progress .counter {
-        position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
+        position: static;
+        left: 0;
+        flex-shrink: 0;
         text-align: center;
         color: white;
         font-size: 0.85em;

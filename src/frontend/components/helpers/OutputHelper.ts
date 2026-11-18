@@ -9,7 +9,7 @@ import { activeFocus, activeProject, activeShow, focusMode, outLocked, outputs, 
 import { playFolder, togglePlayingMedia } from "../../utils/shortcuts"
 import { openProjectItem } from "../show/project"
 import { clone } from "./array"
-import { getAllActiveOutputIds, setOutput } from "./output"
+import { getAllActiveOutputIds, isOutputBound, setOutput } from "./output"
 import { checkActionTrigger, getFewestOutputLines, getItemWithMostLines, playPdf, updateOut } from "./showActions"
 import { _show } from "./shows"
 import { runActionId } from "../actions/actions"
@@ -130,6 +130,9 @@ export class OutputHelper {
     private static changeProjectItem(outputId: string, item: OutSlide | ShowRef | null = null, next: boolean, options: Options) {
         if (!get(focusMode) && get(special).nextItemOnLastSlide === false) return
 
+        // if any active output can still advance within the active show, wait for output(s) to reach end of active show before changing project item
+        if (this.canAnyOutputAdvanceInActiveShow(next, options)) return
+
         const projectItems = this.getProjectItems()
         const projectItemIndex = this.getProjectItemIndex(item)
         let newIndex = projectItemIndex + (next ? 1 : -1)
@@ -152,9 +155,10 @@ export class OutputHelper {
             if (!newItem) return
 
             activeFocus.set({ id: newItem.id, index: newIndex, type: newItem.type || "show" })
+            this.currentActiveShow = { time: 0, show: null }
 
             // play directly in focus mode
-            if ((newItem?.type || "show") === "show") {
+            if ((newItem.type || "show") === "show") {
                 const newOut = this.getSubsequent(outputId, { id: newItem.id, layout: newItem.layout }, next)
                 if (newOut) this.playSlide(outputId, newOut, options.slideLayers)
             } else {
@@ -170,13 +174,15 @@ export class OutputHelper {
         }
 
         const newItem = projectItems[newIndex]
+        if (!newItem) return
+
         this.runSectionAction(newItem)
 
         openProjectItem(get(activeProject) || "", newIndex)
 
         // play directly from "Next slide timer" & "nextAfterMedia"
         if (options.playNext) {
-            if ((newItem?.type || "show") === "show") {
+            if ((newItem.type || "show") === "show") {
                 // allow show to load first
                 setTimeout(() => {
                     const newOut = this.getSubsequent(outputId, { id: newItem.id, layout: newItem.layout }, next)
@@ -186,6 +192,16 @@ export class OutputHelper {
                 this.playItem(outputId, newItem, next, options)
             }
         }
+    }
+
+    private static canAnyOutputAdvanceInActiveShow(next: boolean, options: Options): boolean {
+        const activeItem = this.getActiveItem()
+        if (!activeItem) return false
+
+        return getAllActiveOutputIds().some((id) => {
+            const show = this.getShow(id, next, options)
+            return show?.id === activeItem.id && !!this.getSubsequent(id, show, next)
+        })
     }
 
     private static runSectionAction(item: ProjectShowRef | undefined) {
@@ -279,9 +295,9 @@ export class OutputHelper {
             return (outBackground?.path || outBackground?.id) === item.id
         }
 
-        if (item.type === "overlay") {
-            const outOverlays = out.overlays || []
-            return outOverlays.includes(item.id || "")
+        if (item.type === "overlay" || item.type === "effect") {
+            const list = item.type === "effect" ? out.effects || [] : out.overlays || []
+            return list.includes(item.id || "")
         }
 
         if (item.type === "audio") {
@@ -305,6 +321,8 @@ export class OutputHelper {
 
     private static outShowIsSameAsActive(outSlide: OutSlide | null, active: OutSlide | null) {
         if (!outSlide || !active) return false
+        // the same show can be added multiple times in a project (e.g. a blank show)
+        if (typeof outSlide.projectIndex === "number" && typeof active.projectIndex === "number" && outSlide.projectIndex !== active.projectIndex) return false
         return outSlide.id === active.id && outSlide.layout === active.layout
     }
 
@@ -402,7 +420,7 @@ export class OutputHelper {
 
         // bound to specific outputs, but not this one
         const bindings = ref.data?.bindings || []
-        if (bindings.length && !bindings.includes(outputId)) return true
+        if (bindings.length && !isOutputBound(bindings, outputId)) return true
 
         return false
     }
@@ -423,14 +441,14 @@ export class OutputHelper {
         return { hasEnded, nextLine, _hasEnded, previousLine, lastLine }
     }
     private static checkClickReveal(data: OutSlide, slide: Slide | null) {
-        const clickRevealItems = (slide?.items || []).filter((a) => a?.clickReveal)
+        const clickRevealItems = Array.isArray(slide?.items) ? slide.items.filter((a) => a?.clickReveal) : []
         const isRevealed = clickRevealItems.length ? !!data.itemClickReveal : true
         const _isRevealed = !clickRevealItems.length || !!data?.itemClickReveal
 
         return { isRevealed, shouldReveal: !!clickRevealItems.length, _isRevealed }
     }
     private static checkLinesReveal(data: OutSlide, slide: Slide | null) {
-        const linesRevealItems = (slide?.items || []).filter((a) => a?.lineReveal)
+        const linesRevealItems = Array.isArray(slide?.items) ? slide.items.filter((a) => a?.lineReveal) : []
         const shouldLinesReveal = !!linesRevealItems.length
         const maxRevealLines = getItemWithMostLines({ items: linesRevealItems })
         const currentReveal = data?.revealCount ?? 0
@@ -516,9 +534,10 @@ export class OutputHelper {
         this.previousOutputted = null
         const out = this.getOut(outputId)
 
-        // Overlays
-        if (item.type === "overlay") {
-            setOutput("overlays", item.id, false, "", true)
+        // Overlays & Effects
+        if (item.type === "overlay" || item.type === "effect") {
+            const key = item.type === "effect" ? "effects" : "overlays"
+            setOutput(key, item.id, false, "", true)
             return
         }
 

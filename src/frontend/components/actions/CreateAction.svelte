@@ -1,6 +1,6 @@
 <script lang="ts">
     import { createEventDispatcher } from "svelte"
-    import { actionRevealUsed, actions, activePopup, audioPlaylists, audioStreams, categories, effects, emitters, obsData, outputs, overlays, popupData, projects, shows, stageShows, styles, templates, timers, variables } from "../../stores"
+    import { actionRevealUsed, actions, activePopup, ai, audioPlaylists, audioStreams, categories, effects, emitters, obsData, outputs, overlays, popupData, projects, scenes, shows, stageShows, styles, templates, timers, variables } from "../../stores"
     import { translateText } from "../../utils/language"
     import { formatSearch } from "../../utils/search"
     import Icon from "../helpers/Icon.svelte"
@@ -15,13 +15,13 @@
     import MaterialButton from "../inputs/MaterialButton.svelte"
     import MaterialTextInput from "../inputs/MaterialTextInput.svelte"
     import MaterialToggleSwitch from "../inputs/MaterialToggleSwitch.svelte"
+    import { spotifyState } from "../output/preview/SpotifyManager"
     import { getGlobalGroupName } from "../show/tools/groups"
     import Center from "../system/Center.svelte"
     import CustomInput from "./CustomInput.svelte"
     import { actionData } from "./actionData"
-    import { getActionTriggerId } from "./actions"
+    import { getActionName, getActionTriggerId } from "./actions"
     import { API_ACTIONS } from "./api"
-    import { spotifyState } from "../output/preview/SpotifyManager"
 
     export let list = false
     export let full = false
@@ -33,6 +33,7 @@
     export let existingActions: string[] = []
     export let actionNameIndex = 0
     export let choosePopup = false
+    export let isDragging = false
 
     $: existingActionsFiltered = choosePopup ? existingActions : existingActions.filter((a) => a !== actionId)
 
@@ -73,13 +74,16 @@
 
     const obsEnabled = !!$obsData.enabled
     const spotifyEnabled = !!$spotifyState
+    const webRtcOutputs = Object.values($outputs).some((a) => a.webrtc)
+    const rtmpOutputs = Object.values($outputs).some((a) => a.rtmp)
+    const smartEnabled = !!$ai?.enabled
 
     let previousSection = ""
     $: ACTIONS = [
         ...Object.keys(API_ACTIONS)
             .map((id) => {
                 let data = actionData[id] || {}
-                let name = translateText(data.name || "") || id
+                let name = translateText(data.name || "", null, data.replace) || id
                 let icon = data.icon || "actions"
                 let common = !!data.common
 
@@ -102,6 +106,12 @@
                 if (id.startsWith("obs_") && !obsEnabled) return false
                 // remove any Spotify ones if not active
                 if (id.startsWith("spotify_") && !spotifyEnabled) return false
+                // remove WebRTC actions if no WebRTC outputs exist
+                if (id.includes("webrtc_") && !webRtcOutputs) return false
+                // remove RTMP actions if no RTMP outputs exist
+                if (id.includes("rtmp_") && !rtmpOutputs) return false
+                // remove Smart actions if not enabled
+                if (id.includes("smart_") && !smartEnabled) return false
 
                 // show if it has an input (because you probably want to have multiple)
                 // if (actionData[actionId]?.input) return true
@@ -205,22 +215,29 @@
         if (id === "emit_action") return $emitters[actionValue.emitter]?.name || ""
         if (id === "run_action" || id === "toggle_action") return getName($actions)
         if (id === "id_start_effect") return getName($effects)
-        if (id === "start_show") return getName($shows)
+        if (id === "start_show" || id === "id_select_show") return getName($shows)
         if (id === "id_select_project") return getName($projects)
         if (id === "set_template") return getName($templates)
-        if (id === "toggle_output") return getName($outputs)
+        if (id === "start_scene") return getName($scenes)
+        if (id === "toggle_output" || id === "start_output_recording") return getName($outputs)
         if (id === "id_select_stage_layout") return getName($stageShows)
         if (id === "start_audio_stream") return getName($audioStreams)
         if (id === "wait") return Number(actionValue.number) + "s"
         if (id === "id_select_group") return getGlobalGroupName(actionValue.id)
         if (id === "start_camera") return actionValue.label || ""
+        if (id === "start_microphone" || id === "stop_microphone") return actionValue.name || ""
         if (id === "start_screen") return actionValue.name || ""
-        if (id === "change_volume") return ((actionValue.volume || 1) * 100).toString()
+        if (id === "change_volume" || id === "mute") return getActionName(id, actionValue)
         if (id.includes("index")) return actionValue.index || "0"
         if (id.includes("name")) return actionValue.value || ""
         if (id === "change_stage_output_layout") return `${actionValue.outputId ? ($outputs[actionValue.outputId]?.name || "—") + ": " : ""}${$stageShows[actionValue.stageLayoutId]?.name || ""}`
         if (id === "change_output_style") return `${actionValue.outputId ? ($outputs[actionValue.outputId]?.name || "—") + ": " : ""}${actionValue.styleId ? $styles[actionValue.styleId]?.name || "" : translateText("main.none")}`
         if (id === "set_next_slide_timer") return Number(actionValue.value) + "s"
+        if (id === "disable_slide") {
+            const showName = actionValue.showId ? $shows[actionValue.showId]?.name || "—" : ""
+            const slideIndex = actionValue.index ?? 0
+            return `${showName ? showName + " - " : ""}${slideIndex}`
+        }
 
         return ""
     }
@@ -282,20 +299,25 @@
 {:else}
     <div class="box" style={actionNameIndex > 1 ? "margin-top: 5px;" : ""}>
         <div class="part">
-            <p style="font-weight: 600;padding: 0 10px;display: flex;align-items: center;">
-                <T id="midi.start_action" />
-                <span style="color: var(--secondary);display: flex;align-items: center;margin-inline-start: 8px;">
-                    {#if actionNameIndex}#{actionNameIndex}{/if}
-                </span>
-            </p>
+            <span style="display: flex;align-items: center;">
+                {#if actionId && existingActions.length > 1}
+                    <span class="drag_handle" style="display: flex;align-items: center;cursor: grab;opacity: 0.6;padding: 0 4px;">
+                        <Icon id="drag_dots" white />
+                    </span>
+                {/if}
+
+                <p style="font-weight: 600;padding: 0 4px;padding-left: 6px;display: flex;align-items: center;">
+                    <T id="midi.start_action" />
+                    <span style="color: var(--secondary);display: flex;align-items: center;margin-inline-start: 8px;">
+                        {#if actionNameIndex}#{actionNameIndex}{/if}
+                    </span>
+                </p>
+            </span>
 
             <div style="display: flex;align-items: center;gap: 3px;">
                 {#if actionId && existingActions.length > 1}
-                    {#if actionNameIndex > 1}
-                        <MaterialButton style="padding: 8px;" icon="up" on:click={() => changeAction({ id: "move_up", index: actionNameIndex - 1 })} />
-                    {/if}
-                    <MaterialButton style="padding: 6.5px;" title="actions.remove" on:click={() => changeAction({ id: "remove", index: actionNameIndex - 1 })}>
-                        <Icon id="close" size={1.2} white />
+                    <MaterialButton style="padding: 5px;" title="actions.remove" on:click={() => changeAction({ id: "remove", index: actionNameIndex - 1 })}>
+                        <Icon id="close" white />
                     </MaterialButton>
                 {/if}
             </div>
@@ -327,7 +349,7 @@
     </div>
 {/if}
 
-{#if dataInputs && (dataOpened || dataMenuOpened)}
+{#if dataInputs && !isDragging && (dataOpened || dataMenuOpened)}
     <div class="menu-indent">
         <CustomInput {mainId} inputId={input} actionIndex={actionNameIndex} value={actionValue} actionId={getActionTriggerId(actionId)} on:change={(e) => changeAction({ id: actionId, actionValue: e.detail })} list />
     </div>

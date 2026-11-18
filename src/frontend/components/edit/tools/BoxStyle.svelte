@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onDestroy, onMount } from "svelte"
-    import type { Item, ItemType, Slide } from "../../../../types/Show"
-    import { activeEdit, activePopup, activeShow, alertMessage, categories, styles as outputStyles, overlays, selected, shownTips, showsCache, special, templates, theme, themes, timers } from "../../../stores"
+    import type { CustomFont, Item, ItemType, Slide } from "../../../../types/Show"
+    import { activeEdit, activePopup, activeShow, alertMessage, categories, media, styles as outputStyles, overlays, selected, shownTips, showsCache, special, templates, theme, themes, timers } from "../../../stores"
     import { getNormalizedKey, isFormattingKey } from "../../../utils/shortcuts"
     import { newToast } from "../../../utils/common"
     import { clone } from "../../helpers/array"
@@ -14,11 +14,13 @@
     import { MAX_FONT_SIZE } from "../scripts/autosize"
     import { addFilterString, addStyle, addStyleString, getItemStyleAtPos, getItemText, getLastLineAlign, getLineText, getSelectionRange } from "../scripts/textStyle"
     import { itemBoxes, setBoxInputValue } from "../values/boxes"
+    import { VideoPlayer } from "../../media/video/videoPlayer"
     import EditValues from "./EditValues.svelte"
 
     export let id: ItemType
     export let allSlideItems: Item[] = []
     export let item: Item | null = null
+    export let customLocalFonts: CustomFont[] = []
 
     // -----
 
@@ -230,7 +232,7 @@
 
     const setBox = () => clone(itemBoxes[id])!
     let box = setBox()
-    $: if ($activeEdit.id || $activeShow?.id || $activeEdit.slide) box = setBox()
+    $: if ($activeEdit.id || $activeShow?.id || ($activeEdit.slide ?? -1) > -1) box = setBox()
 
     // get item values
     $: style = item?.lines ? getItemStyleAtPos(item.lines, selection) : item?.type === "table" && activeRowIdx >= 0 && activeColIdx >= 0 && item.table?.rows?.[activeRowIdx]?.cells?.[activeColIdx] ? item.table.rows[activeRowIdx].cells[activeColIdx].style || "" : item?.style || ""
@@ -259,26 +261,66 @@
     $: if (box?.sections?.font) {
         setBoxInputValue(box, "font", "font-size", "disabled", item?.textFit !== "none")
         setBoxInputValue(box, "font", "textFit", "value", item?.textFit || (id === "table" ? "none" : "growToFit")) // other items (like clock, timer)
-        // setBoxInputValue(box2, "font", "auto", "value", item.auto ?? true)
     }
 
     $: if (id === "text") {
         setBoxInputValue(box, "default", "font-family", "styleValue", getStyles(style)["font"] || "")
-        // setBoxInputValue(box2, "default", "textFit", "hidden", !item?.auto)
-        setBoxInputValue(box, "text", "nowrap", "value", !!styles["white-space"]?.includes("nowrap"))
         setBoxInputValue(box, "lines", "specialStyle.lineRadius", "hidden", !item?.specialStyle?.lineRadius && !item?.specialStyle?.lineBg)
-
-        setBoxInputValue(box, "default", "textFit", "value", item?.auto ? "shrinkToFit" : "none") // text items
-        // WIP disabled auto size -- don't disable if all text is selected
-        // setBoxInputValue(box, "default", "font-size", "disabled", selection?.length)
     }
 
     $: if (id === "media" && item) {
         const extension = getExtension(item.src || "")
         const isVideo = getMediaType(extension) === "video"
-        setBoxInputValue(box, "default", "muted", "hidden", !isVideo)
+        // setBoxInputValue(box, "default", "muted", "hidden", !isVideo)
         setBoxInputValue(box, "default", "loop", "hidden", !isVideo)
+        setBoxInputValue(box, "default", "volume", "hidden", !isVideo)
         setBoxInputValue(box, "default", "speed", "hidden", !isVideo)
+        setBoxInputValue(box, "default", "fromTime", "hidden", !isVideo)
+        setBoxInputValue(box, "default", "toTime", "hidden", !isVideo)
+
+        // set default values to any global options
+        const globalMedia = (item.src && $media[item.src]) || {}
+        const defaultFields: Array<{ id: string; val: any; multiply?: number }> = [
+            { id: "volume", val: globalMedia.volume, multiply: 100 },
+            { id: "loop", val: globalMedia.loop },
+            { id: "speed", val: globalMedia.speed },
+            { id: "fromTime", val: globalMedia.fromTime },
+            { id: "toTime", val: globalMedia.toTime }
+        ]
+        defaultFields.forEach(({ id, val, multiply }) => {
+            if (val === undefined) return
+            setBoxInputValue(box, "default", id, "values", { defaultValue: multiply ? val * multiply : val })
+            setBoxInputValue(box, "default", id, "default", val)
+            if (item[id] === undefined) setBoxInputValue(box, "default", id, "value", val)
+        })
+
+        if (isVideo && item.src) {
+            const applyDuration = (duration: number) => {
+                setBoxInputValue(box, "default", "fromTime", "values", { max: duration, sliderValues: { min: 0, max: duration } })
+                setBoxInputValue(box, "default", "toTime", "values", { max: duration, sliderValues: { min: 0, max: duration }, defaultValue: globalMedia.toTime ?? duration })
+                setBoxInputValue(box, "default", "toTime", "default", globalMedia.toTime ?? duration)
+                box = box
+            }
+
+            if (mediaDurations[item.src]) {
+                applyDuration(mediaDurations[item.src])
+            } else {
+                VideoPlayer.getDuration(item.src).then((duration) => {
+                    if (!duration || !item.src) return
+                    mediaDurations[item.src] = duration
+                    applyDuration(duration)
+                })
+            }
+        }
+        box = box
+    }
+    let mediaDurations: { [path: string]: number } = {}
+
+    $: if (id === "camera" && item) {
+        if (item.device) {
+            setBoxInputValue(box, "default", "device", "value", item.device)
+            setBoxInputValue(box, "default", "device", "values", { name: item.device.name || item.device.id || "live.cameras" })
+        }
     }
 
     $: if (id === "timer" && item) {
@@ -293,15 +335,19 @@
     $: if (id === "clock" && item) {
         const clockType = item.clock?.type || "digital"
         const dateFormat = item.clock?.dateFormat || "none"
+        const customFormat = item.clock?.customFormat || ""
+        const showOffsetDays = clockType === "custom" && /[MDY]/.test(customFormat) // has M or D or Y
 
         setBoxInputValue(box, "default", "clock.dateFormat", "hidden", clockType !== "digital")
         setBoxInputValue(box, "default", "clock.showTime", "hidden", clockType !== "digital" || dateFormat === "none")
         setBoxInputValue(box, "default", "clock.seconds", "hidden", clockType === "custom" || (clockType === "digital" && item.clock?.showTime === false && dateFormat !== "none"))
         setBoxInputValue(box, "default", "clock.customFormat", "hidden", clockType !== "custom")
+        setBoxInputValue(box, "default", "clock.offsetDays", "hidden", !showOffsetDays)
         setBoxInputValue(box, "default", "tip", "hidden", clockType !== "custom")
     }
     $: if (id === "camera" && item) {
         if (item.device?.name) setBoxInputValue(box, "default", "device", "name", item.device.name)
+        if (item.device?.type) setBoxInputValue(box, "default", "device", "icon", item.device.type === "ndi" ? "ndi" : item.device.type === "omt" ? "omt" : item.device.type === "screen" ? "screen" : item.device.type === "blackmagic" ? "blackmagic" : "camera")
     }
     $: if (id === "slide_tracker" && item) {
         setBoxInputValue(box, "default", "tracker.accent", "value", item.tracker?.accent || $themes[$theme]?.colors?.secondary || "#F0008C")
@@ -325,6 +371,11 @@
         setBoxInputValue(box, "default", "chart.holeSize", "hidden", item.chart?.type !== "pie")
         setBoxInputValue(box, "default", "chart.holeSize", "value", item.chart?.holeSize ?? 0)
     }
+    $: if (id === "visualizer" && item) {
+        const visualizerType = item.visualizer?.type || "bars"
+        const showPalette = ["aurora", "horizon", "orbit", "soft-spectrum"].includes(visualizerType)
+        setBoxInputValue(box, "default", "visualizer.palette", "hidden", !showPalette)
+    }
 
     ///
 
@@ -335,13 +386,14 @@
         else if (input.key === "text-align") value = `text-align: ${value};`
         else if (input.key) value = { ...((item as any)?.[input.key] || {}), [input.key]: value }
 
+        let targetId = input.id
         // set nested value
         if (input.id.includes(".")) {
             let splitted = input.id.split(".")
             let item = getSelectedItem()
             if (!item) return
 
-            input.id = splitted[0]
+            targetId = splitted[0]
 
             let newValue = item[splitted[0]]
             if (typeof newValue !== "object" || newValue === null) newValue = {}
@@ -375,9 +427,6 @@
                 } else {
                     newFontSize = input.value !== "growToFit" ? 100 : MAX_FONT_SIZE
                 }
-            } else if (input.id === "auto" && item?.textFit === "growToFit") {
-                if (input.value && Number(styles["font-size"]) < MAX_FONT_SIZE) newFontSize = MAX_FONT_SIZE
-                else if (!input.value && Number(styles["font-size"]) === MAX_FONT_SIZE) newFontSize = 100
             }
             if (newFontSize) updateValue({ detail: { name: "font_size", id: "style", key: "font-size", value: newFontSize + "px" } })
         }
@@ -393,7 +442,7 @@
 
         history({
             id: "setItems",
-            newData: { style: { key: input.id, values: [value] } },
+            newData: { style: { key: targetId, values: [value] } },
             location: { page: "edit", show: $activeShow!, slide: getLayoutRef()[$activeEdit.slide!]?.id, items: allItems }
         })
 
@@ -408,12 +457,14 @@
             allItems.forEach((i: number) => {
                 if (!a[$activeEdit.id!].items[i]) return
 
-                if (!input.id.includes(".")) {
-                    a[$activeEdit.id!].items[i][input.id] = value
+                delete a[$activeEdit.id!].items[i].autoFontSize
+
+                if (!targetId.includes(".")) {
+                    a[$activeEdit.id!].items[i][targetId] = value
                     return
                 }
 
-                let splitted = input.id.split(".")
+                let splitted = targetId.split(".")
                 let nested = a[$activeEdit.id!].items[i][splitted[0]]
                 if (typeof nested !== "object" || nested === null) {
                     a[$activeEdit.id!].items[i][splitted[0]] = {}
@@ -421,6 +472,35 @@
                 a[$activeEdit.id!].items[i][splitted[0]][splitted[1]] = value
             })
 
+            a[$activeEdit.id!].modified = Date.now()
+            return a
+        }
+    }
+
+    function isPartialTextSelection() {
+        if (!selection?.length || !selection.some((a) => a?.start !== undefined && a.start !== a.end)) return false
+        if (!item?.lines?.length) return false
+        return !item.lines.every((line, i) => selection![i]?.start === 0 && selection![i]?.end === getLineText(line).length)
+    }
+
+    function disableAutoSize(items: number[]) {
+        if ($activeEdit.id) {
+            if ($activeEdit.type === "overlay") overlays.update(updateAutoSize)
+            else if ($activeEdit.type === "template") templates.update(updateAutoSize)
+            return
+        }
+
+        const location = { page: "edit" as const, show: $activeShow!, slide: getLayoutRef()[$activeEdit.slide!]?.id, items }
+        // separate location ids so the different keys don't get coalesced into one history entry
+        history({ id: "setItems", newData: { style: { key: "textFit", values: ["none"] } }, location: { ...location, id: "textFit" } })
+
+        function updateAutoSize(a: any) {
+            if (!a[$activeEdit.id!]?.items) return a
+            items.forEach((i) => {
+                if (!a[$activeEdit.id!].items[i]) return
+                a[$activeEdit.id!].items[i].textFit = "none"
+                delete a[$activeEdit.id!].items[i].autoFontSize
+            })
             a[$activeEdit.id!].modified = Date.now()
             return a
         }
@@ -438,7 +518,7 @@
         const colIdx = td ? parseInt(td.getAttribute("data-col") || "") : -1
 
         if (item?.type === "table" && rowIdx >= 0 && colIdx >= 0 && input.key && item.table?.rows?.[rowIdx]?.cells?.[colIdx]) {
-            let allItems: number[] = $activeEdit.items
+            let allItems: number[] = [...$activeEdit.items]
             if (!allItems.length) allSlideItems.forEach((_item, i) => allItems.push(i))
             let cellStyle = item.table.rows[rowIdx].cells[colIdx].style || ""
             cellStyle = addStyleString(cellStyle, [input.key, input.value])
@@ -447,13 +527,7 @@
             return
         }
 
-        // does not work for partial text when auto size is enabled
-        // WIP doesn't need to show if disabled works correctly
-        if (id === "text" && input.key === "font-size" && selection?.length && (item?.textFit || "none") !== "none") {
-            newToast("edit.auto_size settings.enabled!")
-        }
-
-        let allItems: number[] = $activeEdit.items
+        let allItems: number[] = [...$activeEdit.items]
         // update all items if nothing is selected
         if (!allItems.length) allSlideItems.forEach((_item, i) => allItems.push(i))
         allSlideItems = clone(allSlideItems)
@@ -462,8 +536,15 @@
         if (($activeEdit.type || "show") === "show") allItems = allItems.reverse()
 
         // only same type
-        let currentType = id || allSlideItems[allItems[0]].type || "text"
-        allItems = allItems.filter((index) => (allSlideItems[index].type || "text") === currentType)
+        let currentType = id || allSlideItems[allItems[0]]?.type || "text"
+        allItems = allItems.filter((index) => (allSlideItems[index]?.type || "text") === currentType)
+
+        // font size on a partial selection is invisible while auto size is enabled, so disable auto size first
+        const hasScriptureNumber = item?.lines?.some((line) => line.text?.some((t) => /scripture(?:\d+)?_number/.test(t.value || "")))
+        if (id === "text" && input.id === "style" && input.key === "font-size" && input.name !== "font_size" && (item?.textFit || "none") !== "none" && isPartialTextSelection() && !hasScriptureNumber) {
+            disableAutoSize(allItems)
+            newToast("toast.autosize_disabled")
+        }
 
         if (input.id === "nowrap") input = { ...input, id: "style", key: "white-space", value: input.value ? "nowrap" : undefined }
 
@@ -543,10 +624,10 @@
                 }
             } else {
                 if (input.id.includes("CSS")) {
-                    values[slideId] = [input.value]
+                    values[slideId].push(input.value)
                 } else {
-                    // TODO: don't replace full item style (position) when changing multiple (Like EditTools.svelte:152)
-                    values[slideId] = [addStyleString(item?.style || "", [input.key, input.value])]
+                    // merge into each item's own style so position etc. is kept when changing multiple items
+                    values[slideId].push(addStyleString(currentSlideItem.style || "", [input.key, input.value]))
                 }
             }
         }
@@ -566,39 +647,33 @@
         // update layout
         if ($activeEdit.id) {
             // overlay / template
-            let currentItems: Item[] = []
-            if ($activeEdit.type === "overlay") currentItems = clone($overlays[$activeEdit.id]?.items || [])
-            if ($activeEdit.type === "template") currentItems = clone($templates[$activeEdit.id]?.items || [])
-            // only selected
-            currentItems = currentItems.filter((_item, i) => allItems.includes(i))
-
-            // WIP changing the default "Name" overlay causes textbox swapping....
+            const sourceItems = ($activeEdit.type === "overlay" ? $overlays[$activeEdit.id]?.items : $templates[$activeEdit.id]?.items) || []
+            // pair each selected item with its own computed value (data & indexes must stay aligned)
+            let currentItems: Item[] = allItems.map((itemIndex) => clone(sourceItems[itemIndex]))
+            const allValues: any[] = Object.values(values)[0] || []
 
             allItems.forEach((_itemIndex, i) => {
                 if (!currentItems[i]) return
 
-                let allValues: any = Object.values(values)[0] || []
                 let currentValue: any = allValues[i] ?? allValues[0]
-                // some textboxes don't have lines, this will break things, so make sure it has lines!
-                if (currentItems[i].lines && typeof currentValue === "string") currentValue = allValues.find((a: any) => typeof a !== "string") || allValues[0]
+                if (currentValue === undefined) return
 
                 if (input.key === "align-items") currentItems[i].align = currentValue
-                else if (currentType !== "text") currentItems[i].style = currentValue
+                else if (currentType !== "text" || (!currentItems[i].lines && typeof currentValue === "string")) currentItems[i].style = currentValue
                 else {
                     let lines = currentItems[i].lines
                     lines?.forEach((_a, j) => {
-                        if (currentItems[i].lines?.[j] && currentValue) {
+                        if (currentItems[i].lines?.[j] && currentValue?.[j] !== undefined) {
                             currentItems[i].lines![j][aligns ? "align" : "text"] = currentValue[j]
                         }
                     })
                 }
             })
 
-            // WIP if top textbox is empty, and another has text, that will update (but the right side won't update (as top is empty as not changed)), that is confusing
-
             // no text
-            if (currentItems[0]?.lines) {
-                let textLength = currentItems.reduce((length, item) => (length += getItemText(item).length), 0)
+            const textItems = currentItems.filter((a) => a?.lines)
+            if (textItems.length) {
+                let textLength = textItems.reduce((length, item) => (length += getItemText(item).length), 0)
                 if (!textLength) {
                     newToast("empty.text")
                     return
@@ -631,14 +706,6 @@
             return
         }
 
-        // no text
-        // values: {key: [[[]]]}
-        let textLength = Object.values(values).reduce((length: number, value: any) => length + value.flat(2).reduce((value, text) => value + (text?.value || ""), "").length, 0)
-        if (input.key !== "text-align" && !aligns && !textLength) {
-            newToast("empty.text")
-            return
-        }
-
         let key: string = input.key === "text-align" || aligns ? "align" : "text"
         slides.forEach((slide, i) => {
             if (!slideItems[i].length) return
@@ -657,7 +724,6 @@
         input.value = input.values.value
         input.input = input.type
 
-        if (input.id === "textFit") updateValue({ detail: { id: "auto", value: input.value !== "none" } })
         // unset transparent color
         if (input.key === "text-shadow" && input.value.includes("rgb(0 0 0 / 0)") && input.value.includes("px")) {
             input.value = input.value.replace("rgb(0 0 0 / 0)", "rgb(0 0 0 / 0.4)")
@@ -735,5 +801,5 @@
 <svelte:window on:keyup={keyup} on:keydown={keydown} on:mouseup={getTextSelection} on:mousedown={mousedown} />
 
 {#if loaded}
-    <EditValues sections={boxSections} {item} {styles} {customValues} type="text" on:change={updateValue2} />
+    <EditValues sections={boxSections} {item} {styles} {customValues} {customLocalFonts} type="text" on:change={updateValue2} />
 {/if}

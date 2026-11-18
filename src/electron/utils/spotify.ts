@@ -5,6 +5,25 @@ import type { SpotifyState } from "../../types/Main"
 // ----- BRIDGE LOGIC (Windows only) -----
 if (process.env.SPOTIFY_BRIDGE === "true") {
     let client: any = null
+    let commandQueue = Promise.resolve()
+    let isExecuting = false
+
+    const enqueueNativeCall = (fn: () => void) => {
+        commandQueue = commandQueue
+            .then(async () => {
+                if (!client || isExecuting) return
+                isExecuting = true
+                try {
+                    fn()
+                } finally {
+                    isExecuting = false
+                }
+            })
+            .catch((err) => {
+                isExecuting = false
+                process.send?.({ type: "error", error: err?.message || String(err) })
+            })
+    }
 
     process.on("message", (msg: any) => {
         try {
@@ -20,48 +39,72 @@ if (process.env.SPOTIFY_BRIDGE === "true") {
                 } catch (e: any) {
                     let error = e.message
 
-                    if (e.message.includes("Failed to load shared library")) {
+                    if (e.message?.includes("Failed to load shared library")) {
                         error += "\n\nYou are likely missing the Visual C++ Redistributable. You can download and install it from here: https://aka.ms/vs/17/release/vc_redist.x64.exe"
                     }
 
                     process.send?.({ type: "error", error: `Failed to init Spotify Controller: ${error}` })
                 }
             } else if (msg.type === "getState") {
-                const s = client?.latestState()
-                if (s) {
-                    if (s.albumArt?.length) s.albumArtBase64 = `data:image/jpeg;base64,${s.albumArt.toString("base64")}`
-                    delete s.albumArt
-                }
-                process.send?.({ type: "state", state: s })
-            } else if (msg.type === "command" && client) {
-                const { command: c, value: v } = msg
-                if (c === "playpause") {
-                    const s = client.latestState()
-                    if (s) {
-                        if (s.statusName === "PLAYING") client.pause()
-                        else client.play()
+                enqueueNativeCall(() => {
+                    if (!client) return
+                    try {
+                        const s = client.latestState()
+                        if (s) {
+                            if (s.albumArt?.length) s.albumArtBase64 = `data:image/jpeg;base64,${s.albumArt.toString("base64")}`
+                            delete s.albumArt
+                        }
+                        process.send?.({ type: "state", state: s })
+                    } catch (err: any) {
+                        process.send?.({ type: "state", state: null })
                     }
-                } else if (c === "next") client.next()
-                else if (c === "prev") client.previous()
-                else if (c === "seek") client.seekMs(v * 1000)
-                else if (c === "setVolume") {
-                    if (typeof client.setVolume === "function") client.setVolume(v)
-                    else client.appVolume = v
-                } else if (c === "pause") client.pause()
+                })
+            } else if (msg.type === "command") {
+                enqueueNativeCall(() => {
+                    if (!client) return
+                    const { command: c, value: v } = msg
+
+                    try {
+                        if (c === "playpause") {
+                            const s = client.latestState()
+                            if (s) {
+                                if (s.statusName === "PLAYING") client.pause()
+                                else client.play()
+                            }
+                        } else if (c === "next") client.next()
+                        else if (c === "prev") client.previous()
+                        else if (c === "seek") client.seekMs(v * 1000)
+                        else if (c === "setVolume") {
+                            if ("appVolume" in client) client.appVolume = Number(v)
+                            else if (typeof client.setVolume === "function") client.setVolume(v)
+                        } else if (c === "pause") client.pause()
+                    } catch (err: any) {
+                        process.send?.({ type: "error", error: `Command ${c} failed: ${err?.message || String(err)}` })
+                    }
+                })
             }
         } catch (e: any) {
             process.send?.({ type: "error", error: e.message })
         }
     })
 
-    process.on("exit", () => {
+    const cleanup = () => {
         if (client) {
             try {
-                client.stop()
-                client.close()
+                const activeClient = client
+                client = null // Instantly block new enqueueNativeCall tasks
+                if (typeof activeClient.removeAllListeners === "function") {
+                    activeClient.removeAllListeners()
+                }
+                activeClient.stop()
+                activeClient.close()
             } catch {}
         }
-    })
+    }
+
+    process.on("exit", cleanup)
+    process.on("SIGINT", cleanup)
+    process.on("SIGTERM", cleanup)
 }
 
 // ----- CLIENT LOGIC (Main Process) -----
@@ -71,56 +114,102 @@ const isLinux = os.platform() === "linux"
 let bridge: ChildProcess | null = null
 let initialized = false
 let pending: ((s: SpotifyState | null) => void) | null = null
+let crashCount = 0
+let lastCrashTime = 0
+let currentBackoffMs = 60000 // Start with 1 minute backoff
+const MAX_BACKOFF_MS = 600000 // Max backoff capped at 10 minutes
+let hasLoggedCrash = false
+let isDisabled = false
 
 export function initSpotify() {
-    if (initialized || !isWin) return
+    if (initialized || !isWin || isDisabled) return
+
+    if (crashCount > 0) {
+        const elapsed = Date.now() - lastCrashTime
+        if (elapsed < currentBackoffMs) return
+    }
+
     initialized = true
     try {
         bridge = fork(__filename, [], { env: { ...process.env, SPOTIFY_BRIDGE: "true" }, stdio: ["ignore", "inherit", "inherit", "ipc"] })
         bridge
             .on("message", (msg: any) => {
-                if (msg.type === "state" && pending) {
+                if (msg.type === "ready") {
+                    crashCount = 0
+                    currentBackoffMs = 60000
+                    hasLoggedCrash = false
+                } else if (msg.type === "state" && pending) {
                     const r = msg.state
                     pending(r?.title ? { isPlaying: r.statusName === "PLAYING", title: r.title, artist: r.artist, albumArt: r.albumArtBase64, positionSec: (r.positionMs || 0) / 1000, durationSec: (r.durationMs || 0) / 1000, volume: r.appVolume ?? 1, platform: "win32" } : null)
                     pending = null
-                } else if (msg.type === "error") console.error("[Spotify] Bridge error:", msg.error)
+                } else if (msg.type === "error") {
+                    if (msg.error?.includes("Visual C++ Redistributable") || msg.error?.includes("Failed to load shared library")) isDisabled = true
+                    console.warn("[Spotify] Bridge error:", msg.error)
+                }
             })
-            .on("exit", () => {
+            .on("exit", (code, signal) => {
                 initialized = false
                 bridge = null
+
+                // Windows fatal exit codes:
+                // 3221225477 (0xC0000005) is STATUS_ACCESS_VIOLATION (e.g. mtx_do_lock MSVCP140 mismatch)
+                // 3221225781 (0xC0000135) is STATUS_DLL_NOT_FOUND (missing MSVCP140.dll / VCRUNTIME140.dll)
+                if (code === 3221225477 || code === -1073741819 || code === 3221225781 || code === -1073741515) {
+                    isDisabled = true
+                    if (!hasLoggedCrash) {
+                        hasLoggedCrash = true
+                        console.warn(`[Spotify] Spotify controller bridge disabled due to missing or incompatible Visual C++ Redistributable (exit code: ${code}).`)
+                    }
+                    return
+                }
+
+                if (code !== 0 || signal) {
+                    crashCount++
+                    lastCrashTime = Date.now()
+                    if (!hasLoggedCrash) {
+                        hasLoggedCrash = true
+                        console.warn(`[Spotify] Bridge failed (code: ${code}, signal: ${signal}). Waiting ${Math.round(currentBackoffMs / 1000)}s before retry.`)
+                    }
+                    // Exponential backoff for subsequent attempts (up to 10 minutes)
+                    currentBackoffMs = Math.min(currentBackoffMs * 2, MAX_BACKOFF_MS)
+                }
             })
             .send({ type: "init" })
     } catch (e) {
+        initialized = false
         console.error("[Spotify] Failed to start bridge:", e)
     }
 }
 
-const macScript = (c?: string) => `tell application "Spotify"
-    ${
-        c ||
-        `if running then
-        set isP to player state is playing
+const macScript = (c?: string) => `if application "Spotify" is running then
+    tell application "Spotify"
+        ${
+            c ||
+            `set isP to player state is playing
         set t to name of current track
         set a to artist of current track
         set d to (duration of current track) / 1000
         set p to player position
-        set art to artwork url of current track
+        set art to ""
+        try
+            set art to artwork url of current track
+        end try
         set v to sound volume
-        return (isP as text) & "|SEC|" & t & "|SEC|" & a & "|SEC|" & p & "|SEC|" & d & "|SEC|" & art & "|SEC|" & v
-    else
-        return "NOT_RUNNING"
-    end if`
-    }
-end tell`
+        return (isP as text) & "|SEC|" & t & "|SEC|" & a & "|SEC|" & p & "|SEC|" & d & "|SEC|" & art & "|SEC|" & v`
+        }
+    end tell
+else
+    return "NOT_RUNNING"
+end if`
 
 export async function getSpotifyState(): Promise<SpotifyState | null> {
     try {
         if (isMac)
             return new Promise((res) =>
                 exec(`osascript -e '${macScript().replace(/'/g, "'\\''")}'`, (e, out) => {
-                    if (e && !out.includes("NOT_RUNNING")) console.error("[Spotify] Mac error:", e)
+                    if (e && !out?.includes("NOT_RUNNING") && !e.message?.includes("syntax error") && !e.message?.includes("2741")) console.error("[Spotify] Mac error:", e)
                     const p = out?.trim().split("|SEC|")
-                    res(e || out.includes("NOT_RUNNING") || p.length < 5 ? null : { isPlaying: p[0] === "true", title: p[1], artist: p[2], positionSec: parseFloat(p[3]) || 0, durationSec: parseFloat(p[4]) || 0, albumArt: p[5] || undefined, volume: (parseInt(p[6]) || 0) / 100, platform: "darwin" })
+                    res(e || out?.includes("NOT_RUNNING") || !p || p.length < 5 ? null : { isPlaying: p[0] === "true", title: p[1], artist: p[2], positionSec: parseFloat(p[3]) || 0, durationSec: parseFloat(p[4]) || 0, albumArt: p[5] || undefined, volume: (parseInt(p[6]) || 0) / 100, platform: "darwin" })
                 })
             )
         if (isWin) {

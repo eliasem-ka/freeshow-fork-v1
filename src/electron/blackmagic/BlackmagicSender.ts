@@ -6,6 +6,7 @@ import { wait } from "../utils/helpers"
 import { BlackmagicManager } from "./BlackmagicManager"
 import { BufferManager } from "./BufferManager"
 import { ImageBufferConverter, ImageBufferConverter10Bit, ImageBufferConverter10BitRGB, ImageBufferConverter12BitRGB } from "./ImageBufferConverter"
+import { cardFormat, cardFrameBytes } from "./cardFormat"
 import { getMacadam } from "./macadamLoader"
 
 const SEGFAULT_PRONE_DEVICES: Set<string> = new Set()
@@ -15,6 +16,7 @@ interface PlaybackData {
     scheduledFrames: number
     pixelFormat: string
     displayMode: string
+    colorSpace?: string
     targetSize: Size
     expectedVideoFrameSize: number
     expectedAudioSampleCount: number
@@ -33,6 +35,11 @@ interface PlaybackData {
     frameProcessing?: boolean
     conversionBackoffUntil?: number
     conversionErrorCount?: number
+    frameDurationTicks?: number
+    // last frame given to the card, in its pixel format
+    lastConverted?: Buffer
+    // frames scheduled on the card and not yet past their display time, oldest first
+    onCard?: { time: number; buf: Buffer }[]
 }
 
 interface AudioQueueState {
@@ -53,6 +60,46 @@ export class BlackmagicSender {
     private static macadamInitMutex: Promise<void> = Promise.resolve()
     // Core state
     static playbackData: { [key: string]: PlaybackData } = {}
+    // per-output pool of card frames (4K is 16-33MB); a buffer is reused once every holder has released it
+    private static freeBuffers = new Map<string, Buffer[]>()
+    private static bufferRefs = new Map<Buffer, { outputId: string; count: number }>()
+    static acquireBuffer(outputId: string, bytes: number): Buffer {
+        const free = this.freeBuffers.get(outputId) || []
+        const i = free.findIndex((b) => b.length === bytes)
+        const buf = i >= 0 ? free.splice(i, 1)[0] : Buffer.allocUnsafe(bytes)
+        this.bufferRefs.set(buf, { outputId, count: 1 })
+        return buf
+    }
+    /** FS_CAP_STATS: buffers in use and free */
+    static bufferStats(outputId: string): string {
+        let used = 0
+        for (const r of this.bufferRefs.values()) if (r.outputId === outputId) used++
+        return `${used} in use, ${(this.freeBuffers.get(outputId) || []).length} free`
+    }
+    static retainBuffer(buf: Buffer) {
+        const r = this.bufferRefs.get(buf)
+        if (r) r.count++
+    }
+    static releaseBuffer(buf: Buffer | null | undefined) {
+        if (!buf) return
+        const r = this.bufferRefs.get(buf)
+        if (!r || --r.count > 0) return
+        this.bufferRefs.delete(buf)
+        // a stopped output's buffers are left to the collector
+        if (!this.playbackData[r.outputId]) return
+        const free = this.freeBuffers.get(r.outputId) || []
+        free.push(buf)
+        this.freeBuffers.set(r.outputId, free)
+    }
+    // osr-capture native card-format converter, set by the capture worker when available
+    static nativeCardConvert: ((frame: Buffer, width: number, height: number, format: number, into?: Buffer) => Buffer) | null = null
+    // FS_CAP_STATS: per-output frame counters, reset each second
+    static stats: { [outputId: string]: { [what: string]: number } } = {}
+    private static note(outputId: string, what: string, value = 1, set = false) {
+        if (!process.env.FS_CAP_STATS) return
+        const s = (this.stats[outputId] ||= {})
+        s[what] = set ? value : (s[what] || 0) + value
+    }
     static initializationInProgress: { [key: string]: Promise<boolean> | undefined } = {}
 
     // Audio buffers cache
@@ -90,7 +137,7 @@ export class BlackmagicSender {
         return Object.values(this.audioQueuesByOutput).reduce((sum, q) => sum + q.length, 0)
     }
 
-    static initialize(outputId?: string, deviceIndex?: number, displayModeName?: string, pixelFormat?: string, enableKeying?: boolean, audioChannels = 2) {
+    static initialize(outputId?: string, deviceIndex?: number, displayModeName?: string, pixelFormat?: string, enableKeying?: boolean, audioChannels = 2, colorSpace = "rec709") {
         // Start global memory cleanup
         if (!this.globalCleanupTimer) {
             this.globalCleanupTimer = setInterval(() => {
@@ -100,14 +147,14 @@ export class BlackmagicSender {
 
         // If parameters are provided, handle the old initialization logic
         if (outputId && deviceIndex !== undefined && displayModeName && pixelFormat) {
-            return this.initializeDevice(outputId, deviceIndex, displayModeName, pixelFormat, enableKeying || false, audioChannels)
+            return this.initializeDevice(outputId, deviceIndex, displayModeName, pixelFormat, enableKeying || false, audioChannels, colorSpace)
         }
 
         // Return undefined if no device-specific initialization
         return Promise.resolve(undefined)
     }
 
-    static async initializeDevice(outputId: string, deviceIndex: number, displayModeName: string, pixelFormat: string, enableKeying: boolean, audioChannels = 2) {
+    static async initializeDevice(outputId: string, deviceIndex: number, displayModeName: string, pixelFormat: string, enableKeying: boolean, audioChannels = 2, colorSpace = "rec709") {
         const currentOutputDeviceIndex = this.playbackData[outputId]?.deviceIndex
         // prevent using a device if already in use by another output
         if (this.usedDeviceIndices.has(deviceIndex) && currentOutputDeviceIndex !== deviceIndex) {
@@ -124,7 +171,7 @@ export class BlackmagicSender {
         this.usedDeviceIndices.add(deviceIndex)
 
         // Create a promise that tracks this initialization
-        const initPromise = this._performInitializeDevice(outputId, deviceIndex, displayModeName, pixelFormat, enableKeying, audioChannels)
+        const initPromise = this._performInitializeDevice(outputId, deviceIndex, displayModeName, pixelFormat, enableKeying, audioChannels, colorSpace)
 
         // Store the promise to prevent concurrent attempts
         this.initializationInProgress[outputId] = initPromise
@@ -139,7 +186,7 @@ export class BlackmagicSender {
         }
     }
 
-    static async _performInitializeDevice(outputId: string, deviceIndex: number, displayModeName: string, pixelFormat: string, enableKeying: boolean, audioChannels = 2) {
+    static async _performInitializeDevice(outputId: string, deviceIndex: number, displayModeName: string, pixelFormat: string, enableKeying: boolean, audioChannels = 2, colorSpace = "rec709") {
         const macadam = getMacadam()
         if (!macadam) {
             console.error("Cannot initialize Blackmagic device: macadam module not available")
@@ -259,9 +306,11 @@ export class BlackmagicSender {
 
                 // Use BufferManager for optimal buffer size calculation
                 const targetBufferSize = BufferManager.calculateOptimalBufferSize(displayModeName, pixelFormat)
-                const targetSize = this.getDimensionsForDisplayMode(displayModeName)
+                // the opened mode's own size; the name differs by driver ("4K2160p29.97" or "2160p29.97")
+                const targetSize = playback.width && playback.height ? { width: playback.width, height: playback.height } : this.getDimensionsForDisplayMode(displayModeName)
                 const expectedVideoFrameSize = this.getExpectedVideoFrameSize(targetSize, pixelFormat)
                 const expectedAudioSampleCount = Math.round(48000 / BlackmagicSender.getAccurateFrameRate(displayModeName))
+                const frameDurationTicks = Array.isArray(playback.frameRate) && playback.frameRate[0] > 0 ? playback.frameRate[0] : Math.round(60000 / BlackmagicSender.getAccurateFrameRate(displayModeName))
 
                 // Clear conversion buffer pool for this output to handle resolution changes
                 delete this.conversionBufferPools[outputId]
@@ -275,9 +324,11 @@ export class BlackmagicSender {
                     scheduledFrames: 0,
                     pixelFormat,
                     displayMode: displayModeName,
+                    colorSpace,
                     targetSize,
                     expectedVideoFrameSize,
                     expectedAudioSampleCount,
+                    frameDurationTicks,
                     lastVideoSizeWarningTime: 0,
                     lastAudioSizeWarningTime: 0,
                     isStarted: false,
@@ -292,13 +343,6 @@ export class BlackmagicSender {
                 }
 
                 this.audioQueuesByOutput[outputId] = { queue: [], offset: 0, length: 0 }
-
-                // CRITICAL: Disable frame callback immediately to prevent debug spam
-                if (typeof playback.onFramePlayed === "function") {
-                    playback.onFramePlayed(() => {
-                        // Do nothing - completely disable frame callbacks
-                    })
-                }
 
                 return true
             } catch (err) {
@@ -399,13 +443,11 @@ export class BlackmagicSender {
         const { width, height } = size
 
         if (pixelFormat.includes("YUV")) {
+            // 10-bit YUVA: rows padded to 256 bytes (64 pixels)
+            if (pixelFormat.includes("YUVA")) return Math.ceil(width / 64) * 256 * height
             // 10-bit YUV uses v210 format: 8/3 bytes per pixel (16 bytes per 6 pixels)
-            if (pixelFormat.includes("10")) {
-                // This converter packs/pads in 6-pixel groups per row.
-                // Each group occupies 16 bytes in v210.
-                const groupsPerRow = Math.ceil(width / 6)
-                return groupsPerRow * height * 16
-            }
+            // rows padded to 128 bytes (48 pixels)
+            if (pixelFormat.includes("10")) return cardFrameBytes(width, height, 7)
             // YUV420 planar: Y full res + U/V at quarter res
             if (pixelFormat.includes("420")) {
                 return width * height + (width / 2) * (height / 2) * 2 // Y + U + V
@@ -450,6 +492,9 @@ export class BlackmagicSender {
         // Check for 4K resolutions
         if (normalized.includes("4k") && normalized.includes("2160")) return { width: 3840, height: 2160 }
         if (normalized.includes("4kdci")) return { width: 4096, height: 2160 }
+        // UHD names without the 4K/8K prefix (macOS driver)
+        if (normalized.includes("4320")) return { width: 7680, height: 4320 }
+        if (normalized.includes("2160")) return { width: 3840, height: 2160 }
 
         // Check for 2K resolutions
         if (normalized.includes("2kdci")) return { width: 2048, height: 1080 }
@@ -496,6 +541,32 @@ export class BlackmagicSender {
         return buffer
     }
 
+    // frames to schedule now so `depth` stay queued behind the one on air, by the card's clock (bufferedFrames() does not match it)
+    static framesWanted(outputId: string): number {
+        const data = this.playbackData[outputId]
+        if (!data?.playback || data.needsReinit || this.isPaused[outputId]) return 0
+        let buffered = 0
+        try {
+            buffered = data.playback.bufferedFrames()
+        } catch {
+            return 0
+        }
+        if (!data.isStarted) return buffered > data.targetBufferSize ? 0 : 1
+        const depth = Math.min(2, Math.max(1, Math.ceil(data.targetBufferSize / 4)))
+        const duration = data.frameDurationTicks || 1000
+        let streamTime: number | undefined
+        try {
+            streamTime = data.playback.scheduledTime()?.streamTime
+        } catch {
+            streamTime = undefined
+        }
+        if (typeof streamTime !== "number") return buffered > depth ? 0 : 1
+        // | 0: wrap-safe for the 32-bit streamTime; a slot under a period away is realigned in submitFrame
+        const lead = (data.scheduledFrames * duration - streamTime) | 0
+        const queued = Math.max(1, Math.ceil(lead / duration)) - 1
+        return Math.max(0, depth - queued)
+    }
+
     static canAcceptFrame(outputId: string): boolean {
         if (SEGFAULT_PRONE_DEVICES.has(outputId)) return false
 
@@ -506,20 +577,31 @@ export class BlackmagicSender {
         const now = Date.now()
         if (data.conversionBackoffUntil && now < data.conversionBackoffUntil) return false
 
-        try {
-            const bufferedFrames = data.playback.bufferedFrames()
-            // Keep buffer at 1 frame once started for lowest latency
-            // During startup, allow small buffer (max 3 frames) for smooth start
-            const maxBuffer = data.isStarted ? 1 : Math.min(3, data.targetBufferSize)
-            if (bufferedFrames > maxBuffer) return false
-        } catch {
-            return false
-        }
-
-        return true
+        return this.framesWanted(outputId) > 0
     }
 
-    static scheduleFrame(outputId: string, videoFrame: Buffer, audioFrame: Buffer | null, framerate = 0) {
+    // A shared-texture readback can hand us a frame already in the card's pixel format (osr-capture converts
+    // BGRA->UYVY on the GPU on Windows, on the CPU elsewhere), letting us skip convertVideoFrameFormat. This
+    // is only safe for an exact-match config; canAcceptRawUyvy() is the gate.
+    static canAcceptRawUyvy(captureId: string, size: Size): boolean {
+        const data = this.playbackData[captureId]
+        if (!data) return false
+        // UYVY carries no alpha, so a keyer (fill+key) still needs the BGRA/alpha path.
+        if (data.enableKeying) return false
+        // osr-capture emits 8-bit packed 4:2:2 (UYVY). Only engage when the card is in that exact format.
+        const fmt = data.pixelFormat || ""
+        const is8bit422 = fmt.includes("YUV") && fmt.includes("422") && !fmt.includes("10") && !fmt.includes("12")
+        if (!is8bit422) return false
+        // osr-capture converts with BT.601 full range; only engage when the card colour space matches, so we
+        // don't introduce a 601/709 shift. (Adding BT.709 to the native converter would broaden this.)
+        const cs = (data.colorSpace || "").toLowerCase()
+        if (!(cs.includes("601") || cs.includes("170"))) return false
+        // A UYVY buffer can't be cheaply resized here, so the render size must already equal the card mode.
+        const target = this.getTargetDimensions(captureId)
+        return !!target && target.width === size.width && target.height === size.height
+    }
+
+    static scheduleFrame(outputId: string, videoFrame: Buffer, audioFrame: Buffer | null, framerate = 0, preConverted = false) {
         // Skip immediately if this device is known to cause segfaults
         if (SEGFAULT_PRONE_DEVICES.has(outputId)) {
             return
@@ -540,6 +622,7 @@ export class BlackmagicSender {
         // If one frame is still processing, drop the incoming frame.
         if (data.frameProcessing) {
             data.totalFramesDropped = (data.totalFramesDropped || 0) + 1
+            this.note(outputId, "busy")
             return
         }
 
@@ -548,6 +631,7 @@ export class BlackmagicSender {
         // Back off briefly after conversion allocation failures.
         if (data.conversionBackoffUntil && now < data.conversionBackoffUntil) {
             data.totalFramesDropped = (data.totalFramesDropped || 0) + 1
+            this.note(outputId, "backoff")
             return
         }
 
@@ -557,6 +641,7 @@ export class BlackmagicSender {
         const frameDurationMs = 1000 / targetFps
         const minInterval = Math.max(1, Math.floor(frameDurationMs * 0.75))
         if (data.lastFrameTime && now - data.lastFrameTime < minInterval) {
+            this.note(outputId, "fast")
             return // Skip this frame - coming too fast
         }
         data.lastFrameTime = now
@@ -575,9 +660,8 @@ export class BlackmagicSender {
 
         data.frameProcessing = true
 
-        // Use setTimeout to completely isolate each frame scheduling operation
-        // This prevents a crash in one frame from affecting others
-        setTimeout(() => {
+        // pre-converted frames go now so same-tick repeats follow them; others convert in a later tick
+        const work = () => {
             try {
                 // Skip empty frames
                 if (!videoFrame || videoFrame.length === 0) {
@@ -590,11 +674,7 @@ export class BlackmagicSender {
                     bufferedFrames = data.playback.bufferedFrames()
 
                     // Keep buffer minimal once started to prevent accumulation
-                    const maxBuffer = data.isStarted ? Math.min(2, Math.max(1, Math.ceil(data.targetBufferSize / 4))) : data.targetBufferSize
-                    if (bufferedFrames > maxBuffer) {
-                        data.totalFramesDropped = (data.totalFramesDropped || 0) + 1
-                        return // Buffer too full, skip frame
-                    }
+                    this.note(outputId, "buffered", bufferedFrames, true)
                 } catch (err) {
                     console.log(`Buffer check error: ${err instanceof Error ? err.message : String(err)}`)
                     return // Skip frame on any error
@@ -603,49 +683,63 @@ export class BlackmagicSender {
                 try {
                     // Log frame info and detect actual resolution
                     const now = Date.now()
-                    const expectedBytesForDeclaredSize = size.width * size.height * 4
-                    const maxAllowedInputBytes = expectedBytesForDeclaredSize * 4 // More lenient for HiDPI
-
-                    // Guard against HiDPI/invalid frame payloads before conversion allocates.
-                    if (videoFrame.length !== expectedBytesForDeclaredSize) {
-                        const actualPixels = videoFrame.length / 4
-                        const actualHeight = Math.round(actualPixels / size.width)
-
-                        // Only reject truly invalid frames (negative/zero height or extremely oversized)
-                        if (videoFrame.length > maxAllowedInputBytes || actualHeight <= 0 || !Number.isFinite(actualHeight)) {
+                    let convertedFrame
+                    if (preConverted) {
+                        // Frame already converted to target pixel format (e.g. UYVY via osr-capture)
+                        if (videoFrame.length !== data.expectedVideoFrameSize) {
                             if (now - (data.lastVideoSizeWarningTime || 0) > 5000) {
                                 data.lastVideoSizeWarningTime = now
-                                console.warn(`Skipping invalid source frame: got ${videoFrame.length} bytes (~${size.width}x${actualHeight}), expected ${expectedBytesForDeclaredSize} bytes (${size.width}x${size.height})`)
+                                console.warn(`Skipping pre-converted frame with wrong size: got ${videoFrame.length} bytes, expected ${data.expectedVideoFrameSize} bytes for ${size.width}x${size.height} in ${data.pixelFormat}`)
                             }
                             data.totalFramesDropped = (data.totalFramesDropped || 0) + 1
                             return
                         }
+                        convertedFrame = videoFrame
+                    } else {
+                        const expectedBytesForDeclaredSize = size.width * size.height * 4
+                        const maxAllowedInputBytes = expectedBytesForDeclaredSize * 4 // More lenient for HiDPI
 
-                        // Log size mismatch but continue processing (might be valid HiDPI or scaling issue)
-                        if (now - (data.lastVideoSizeWarningTime || 0) > 10000) {
-                            data.lastVideoSizeWarningTime = now
-                            console.log(`Processing frame with size mismatch: got ${videoFrame.length} bytes (~${size.width}x${actualHeight}), expected ${expectedBytesForDeclaredSize} bytes (${size.width}x${size.height})`)
+                        // Guard against HiDPI/invalid frame payloads before conversion allocates.
+                        if (videoFrame.length !== expectedBytesForDeclaredSize) {
+                            const actualPixels = videoFrame.length / 4
+                            const actualHeight = Math.round(actualPixels / size.width)
+
+                            // Only reject truly invalid frames (negative/zero height or extremely oversized)
+                            if (videoFrame.length > maxAllowedInputBytes || actualHeight <= 0 || !Number.isFinite(actualHeight)) {
+                                if (now - (data.lastVideoSizeWarningTime || 0) > 5000) {
+                                    data.lastVideoSizeWarningTime = now
+                                    console.warn(`Skipping invalid source frame: got ${videoFrame.length} bytes (~${size.width}x${actualHeight}), expected ${expectedBytesForDeclaredSize} bytes (${size.width}x${size.height})`)
+                                }
+                                data.totalFramesDropped = (data.totalFramesDropped || 0) + 1
+                                return
+                            }
+
+                            // Log size mismatch but continue processing (might be valid HiDPI or scaling issue)
+                            if (now - (data.lastVideoSizeWarningTime || 0) > 10000) {
+                                data.lastVideoSizeWarningTime = now
+                                console.log(`Processing frame with size mismatch: got ${videoFrame.length} bytes (~${size.width}x${actualHeight}), expected ${expectedBytesForDeclaredSize} bytes (${size.width}x${size.height})`)
+                            }
                         }
-                    }
 
-                    // Convert frame format
-                    let convertedFrame
-                    try {
-                        const reusableOutputBuffer = this.getReusableConversionBuffer(outputId, data.expectedVideoFrameSize)
-                        convertedFrame = this.convertVideoFrameFormat(videoFrame, data.pixelFormat, size, reusableOutputBuffer, data.enableKeying === true)
-                        data.conversionErrorCount = 0
-                    } catch (err) {
-                        console.error(`Frame conversion error: ${err instanceof Error ? err.message : String(err)}`)
+                        // Convert frame format
+                        try {
+                            const reusableOutputBuffer = this.getReusableConversionBuffer(outputId, data.expectedVideoFrameSize)
+                            convertedFrame = this.convertVideoFrameFormat(videoFrame, data.pixelFormat, size, reusableOutputBuffer, data.enableKeying === true, outputId)
+                            data.conversionErrorCount = 0
+                        } catch (err) {
+                            console.error(`Frame conversion error: ${err instanceof Error ? err.message : String(err)}`)
+                            this.note(outputId, "convertError")
 
-                        const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase()
-                        if (message.includes("allocation failed") || message.includes("out of memory")) {
-                            const failCount = (data.conversionErrorCount || 0) + 1
-                            data.conversionErrorCount = failCount
-                            const backoffMs = Math.min(2000, 100 * 2 ** Math.min(5, failCount))
-                            data.conversionBackoffUntil = Date.now() + backoffMs
-                            data.totalFramesDropped = (data.totalFramesDropped || 0) + 1
+                            const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase()
+                            if (message.includes("allocation failed") || message.includes("out of memory")) {
+                                const failCount = (data.conversionErrorCount || 0) + 1
+                                data.conversionErrorCount = failCount
+                                const backoffMs = Math.min(2000, 100 * 2 ** Math.min(5, failCount))
+                                data.conversionBackoffUntil = Date.now() + backoffMs
+                                data.totalFramesDropped = (data.totalFramesDropped || 0) + 1
+                            }
+                            return
                         }
-                        return
                     }
 
                     // Validate frame sizes
@@ -654,80 +748,12 @@ export class BlackmagicSender {
                         console.warn(`Video frame size mismatch: got ${convertedFrame.length} bytes, expected ${data.expectedVideoFrameSize} bytes for ${size.width}x${size.height} in ${data.pixelFormat}`)
                     }
 
-                    // Get audio safely with correct sample count for the display mode
-                    // Use queued audio to get exactly the right amount for this frame
-                    const audioChannels = data.audioChannels || 2
-                    const outputAudioQueue = this.audioQueuesByOutput[outputId]
-                    const audioData = outputAudioQueue && outputAudioQueue.length > 0 && audioFrame !== null ? this.getAudioForFrame(outputId, audioChannels, data.displayMode) : this.getSilentAudio(audioChannels, data.displayMode)
-
-                    // Validate audio buffer size
-                    const expectedSampleCount = data.expectedAudioSampleCount
-                    const expectedAudioSize = expectedSampleCount * 2 * audioChannels
-                    if (audioData.length !== expectedAudioSize && now - (data.lastAudioSizeWarningTime || 0) > 5000) {
-                        data.lastAudioSizeWarningTime = now
-                        console.warn(`Audio buffer size mismatch: got ${audioData.length} bytes, expected ${expectedAudioSize} bytes (samples: ${expectedSampleCount}, channels: ${data.audioChannels})`)
+                    if (data.lastConverted !== convertedFrame) {
+                        this.retainBuffer(convertedFrame)
+                        this.releaseBuffer(data.lastConverted)
+                        data.lastConverted = convertedFrame
                     }
-
-                    // Calculate stream time in milliseconds for this frame.
-                    // NOTE: `framerate` is frames-per-second, not milliseconds-per-frame.
-                    // Using FPS directly here causes slow playback (e.g. 60 -> 16.7fps timing).
-                    const currentTime = Math.round(data.scheduledFrames * frameDurationMs)
-
-                    // Calculate correct sample frame count based on actual frame rate
-                    // For 48kHz audio: sampleFrameCount = 48000 / frameRate
-                    // Use accurate fractional frame rate for precise audio sizing
-                    const correctSampleFrameCount = expectedSampleCount
-
-                    // Schedule the frame directly with playback.schedule()
-                    const frameDataToSchedule = {
-                        video: convertedFrame,
-                        audio: audioData,
-                        sampleFrameCount: correctSampleFrameCount,
-                        time: currentTime
-                    }
-
-                    // Use the original schedule method but with BufferManager backpressure check
-                    try {
-                        // Schedule the frame using the original method
-                        data.playback.schedule(frameDataToSchedule)
-
-                        // Assume scheduling was successful if no error was thrown
-                        data.scheduledFrames++
-
-                        try {
-                            data.playback.hardwareTime()
-                            data.playback.scheduledTime()
-                        } catch {
-                            // Ignore timing errors
-                        }
-
-                        // Start playback if needed - use smaller buffer for faster start and lower latency
-                        if (!data.isStarted && bufferedFrames >= Math.min(2, data.targetBufferSize)) {
-                            try {
-                                console.log(`Starting BlackMagic playback with ${bufferedFrames} buffered frames`)
-                                data.playback.start({ startTime: 0 })
-                                data.isStarted = true
-                            } catch (err) {
-                                if (err instanceof Error && err.message !== "Already started") {
-                                    console.error(`Error starting playback: ${err.message}`)
-                                } else {
-                                    data.isStarted = true
-                                }
-                            }
-                        }
-                    } catch (scheduleErr) {
-                        console.error(`Frame scheduling error: ${scheduleErr instanceof Error ? scheduleErr.message : String(scheduleErr)}`)
-
-                        // Handle schedule failures
-                        data.scheduleFailCount = (data.scheduleFailCount || 0) + 1
-
-                        // If we're failing too often, reduce buffer target
-                        if (data.scheduleFailCount > 5) {
-                            data.targetBufferSize = Math.max(3, data.targetBufferSize - 1)
-                            data.scheduleFailCount = 0
-                            console.log(`Reduced buffer target to ${data.targetBufferSize} due to schedule failures`)
-                        }
-                    }
+                    this.submitFrame(outputId, data, convertedFrame, audioFrame, bufferedFrames, now)
                 } catch (err) {
                     console.error(`Schedule error: ${err instanceof Error ? err.message : String(err)}`)
 
@@ -748,7 +774,140 @@ export class BlackmagicSender {
             } finally {
                 data.frameProcessing = false
             }
-        }, 0) // End setTimeout - this executes the frame scheduling in a separate tick
+        }
+        if (preConverted) work()
+        else setTimeout(work, 0)
+    }
+
+    // schedule a converted frame with its audio; starts playback once enough is buffered
+    private static submitFrame(outputId: string, data: PlaybackData, convertedFrame: Buffer, audioFrame: Buffer | null, bufferedFrames: number, now: number) {
+        // Get audio safely with correct sample count for the display mode
+        // Use queued audio to get exactly the right amount for this frame
+        const audioChannels = data.audioChannels || 2
+        const outputAudioQueue = this.audioQueuesByOutput[outputId]
+        const audioData = outputAudioQueue && outputAudioQueue.length > 0 && audioFrame !== null ? this.getAudioForFrame(outputId, audioChannels, data.displayMode) : this.getSilentAudio(audioChannels, data.displayMode)
+
+        // Validate audio buffer size
+        const expectedSampleCount = data.expectedAudioSampleCount
+        const expectedAudioSize = expectedSampleCount * 2 * audioChannels
+        if (audioData.length !== expectedAudioSize && now - (data.lastAudioSizeWarningTime || 0) > 5000) {
+            data.lastAudioSizeWarningTime = now
+            console.warn(`Audio buffer size mismatch: got ${audioData.length} bytes, expected ${expectedAudioSize} bytes (samples: ${expectedSampleCount}, channels: ${data.audioChannels})`)
+        }
+
+        // Calculate stream time in DeckLink timescale units (duration ticks) for this frame.
+        const frameDurationTicks = data.frameDurationTicks || 1000
+        // keep each frame at least one period ahead of the card's clock, or the card drops it as late
+        if (data.isStarted) {
+            try {
+                const streamTime = data.playback.scheduledTime()?.streamTime
+                if (typeof streamTime === "number") {
+                    // | 0: wrap-safe for the 32-bit streamTime
+                    const lead = (data.scheduledFrames * frameDurationTicks - streamTime) | 0
+                    if (lead < frameDurationTicks) {
+                        data.scheduledFrames += Math.ceil((frameDurationTicks - lead) / frameDurationTicks)
+                        this.note(outputId, "realigned")
+                    }
+                    this.note(outputId, "streamTime", streamTime, true)
+                }
+            } catch {
+                // no position to align to; schedule in sequence
+            }
+        }
+        const currentTime = data.scheduledFrames * frameDurationTicks
+
+        // Calculate correct sample frame count based on actual frame rate
+        // For 48kHz audio: sampleFrameCount = 48000 / frameRate
+        // Use accurate fractional frame rate for precise audio sizing
+        const correctSampleFrameCount = expectedSampleCount
+
+        // Schedule the frame directly with playback.schedule()
+        const frameDataToSchedule = {
+            video: convertedFrame,
+            audio: audioData,
+            sampleFrameCount: correctSampleFrameCount,
+            time: currentTime
+        }
+
+        // Use the original schedule method but with BufferManager backpressure check
+        try {
+            // Schedule the frame using the original method
+            data.playback.schedule(frameDataToSchedule)
+            // held until its display time passes on the card's clock (played() completions do not arrive)
+            this.retainBuffer(convertedFrame)
+            ;(data.onCard ||= []).push({ time: currentTime, buf: convertedFrame })
+            this.releasePlayed(data, frameDurationTicks)
+
+            // Assume scheduling was successful if no error was thrown
+            data.scheduledFrames++
+            this.note(outputId, "scheduled")
+            this.note(outputId, "frameTime", currentTime, true)
+
+            try {
+                data.playback.hardwareTime()
+                data.playback.scheduledTime()
+            } catch {
+                // Ignore timing errors
+            }
+
+            // Start playback if needed - use smaller buffer for faster start and lower latency
+            if (!data.isStarted && bufferedFrames >= Math.min(2, data.targetBufferSize)) {
+                try {
+                    console.log(`Starting BlackMagic playback with ${bufferedFrames} buffered frames`)
+                    data.playback.start({ startTime: 0 })
+                    data.isStarted = true
+                } catch (err) {
+                    if (err instanceof Error && err.message !== "Already started") {
+                        console.error(`Error starting playback: ${err.message}`)
+                    } else {
+                        data.isStarted = true
+                    }
+                }
+            }
+        } catch (scheduleErr) {
+            console.error(`Frame scheduling error: ${scheduleErr instanceof Error ? scheduleErr.message : String(scheduleErr)}`)
+            this.note(outputId, "scheduleError")
+
+            // Handle schedule failures
+            data.scheduleFailCount = (data.scheduleFailCount || 0) + 1
+
+            // If we're failing too often, reduce buffer target
+            if (data.scheduleFailCount > 5) {
+                data.targetBufferSize = Math.max(3, data.targetBufferSize - 1)
+                data.scheduleFailCount = 0
+                console.log(`Reduced buffer target to ${data.targetBufferSize} due to schedule failures`)
+            }
+        }
+    }
+
+    // releases frames whose display period has ended on the card's clock
+    private static releasePlayed(data: PlaybackData, frameDurationTicks: number) {
+        const onCard = data.onCard
+        if (!onCard?.length) return
+        let streamTime: number | undefined
+        try {
+            streamTime = data.playback.scheduledTime()?.streamTime
+        } catch {
+            return
+        }
+        if (typeof streamTime !== "number") return
+        while (onCard.length && ((streamTime - (onCard[0].time + frameDurationTicks)) | 0) >= 0) this.releaseBuffer(onCard.shift()!.buf)
+    }
+
+    // the card plays out continuously; with no new frame, the last converted one goes again
+    static repeatLastFrame(outputId: string, audioFrame: Buffer | null): boolean {
+        const data = this.playbackData[outputId]
+        if (!data?.playback || data.needsReinit || this.isPaused[outputId] || !data.lastConverted) return false
+        // a new frame is about to go out
+        if (data.frameProcessing) return true
+        try {
+            const bufferedFrames = data.playback.bufferedFrames()
+            this.note(outputId, "repeat")
+            this.submitFrame(outputId, data, data.lastConverted, audioFrame, bufferedFrames, Date.now())
+        } catch (err) {
+            console.error(`Blackmagic repeat error: ${err instanceof Error ? err.message : String(err)}`)
+        }
+        return true
     }
 
     static async reinitializePlayback(outputId: string, deviceIndex: number, displayMode: string, pixelFormat: string, enableKeying: boolean, audioChannels = 2) {
@@ -928,7 +1087,7 @@ export class BlackmagicSender {
         }
     }
 
-    static convertVideoFrameFormat(frame: Buffer, format: string, size: Size, reusableOutputBuffer?: Buffer, enableKeying = false) {
+    static convertVideoFrameFormat(frame: Buffer, format: string, size: Size, reusableOutputBuffer?: Buffer, enableKeying = false, outputId?: string) {
         // Check specific bit-depth RGB formats FIRST before generic checks
         if (format.includes("12Bit") || format.includes("12-bit") || format.includes("12 bit")) {
             const isLE = format.includes("RGBLE") || format.includes("RGB LE")
@@ -951,12 +1110,16 @@ export class BlackmagicSender {
             if (this.devicePixelMode === "BGRA") return ImageBufferConverter10BitRGB.BGRAtoRGB(frame, size, reusableOutputBuffer)
             else return ImageBufferConverter10BitRGB.ARGBtoRGB(frame, size, reusableOutputBuffer)
         } else if (format.includes("YUV")) {
+            const colorSpace = this.playbackData[outputId || ""]?.colorSpace || "rec709"
+            // same bytes as the GPU conversion (cardFormat.ts)
+            const card = cardFormat(format, colorSpace, false)
+            if (card && this.nativeCardConvert) return this.nativeCardConvert(frame, size.width, size.height, card, reusableOutputBuffer)
             if (format.includes("10")) {
-                if (this.devicePixelMode === "BGRA") return ImageBufferConverter10Bit.BGRAtoYUV(frame, size, reusableOutputBuffer)
-                else return ImageBufferConverter10Bit.ARGBtoYUV(frame, size, reusableOutputBuffer)
+                if (this.devicePixelMode === "BGRA") return ImageBufferConverter10Bit.BGRAtoYUV(frame, size, reusableOutputBuffer, colorSpace)
+                else return ImageBufferConverter10Bit.ARGBtoYUV(frame, size, reusableOutputBuffer, colorSpace)
             } else {
-                if (this.devicePixelMode === "BGRA") return ImageBufferConverter.BGRAtoYUV(frame, size, reusableOutputBuffer)
-                else return ImageBufferConverter.ARGBtoYUV(frame, size, reusableOutputBuffer)
+                if (this.devicePixelMode === "BGRA") return ImageBufferConverter.BGRAtoYUV(frame, size, reusableOutputBuffer, colorSpace)
+                else return ImageBufferConverter.ARGBtoYUV(frame, size, reusableOutputBuffer, colorSpace)
             }
         } else if (format.includes("RGBXLE")) {
             const result = reusableOutputBuffer && reusableOutputBuffer.length >= frame.length ? reusableOutputBuffer : Buffer.allocUnsafe(frame.length)
@@ -1020,6 +1183,12 @@ export class BlackmagicSender {
         if (!data) return false
 
         if (typeof data.deviceIndex === "number") this.usedDeviceIndices.delete(data.deviceIndex)
+        this.releaseBuffer(data.lastConverted)
+        data.lastConverted = undefined
+        data.onCard = []
+        this.freeBuffers.delete(outputId)
+        // drop refs to frames still on the card
+        for (const [buf, r] of this.bufferRefs) if (r.outputId === outputId) this.bufferRefs.delete(buf)
 
         console.log(`Stopping Blackmagic output: ${outputId}`)
 

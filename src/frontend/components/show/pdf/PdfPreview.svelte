@@ -3,12 +3,12 @@
     import { onDestroy, onMount } from "svelte"
     import { Main } from "../../../../types/IPC/Main"
     import { sendMain } from "../../../IPC/main"
-    import { activePopup, activeProject, focusMode, labelsDisabled, outLocked, outputs, popupData, projects, slidesOptions, styles } from "../../../stores"
+    import { activePopup, activeProject, focusMode, labelsDisabled, outLocked, outputs, pdfImports, popupData, projects, slidesOptions, styles } from "../../../stores"
     import { triggerClickOnEnterSpace } from "../../../utils/clickable"
     import { newToast, wait } from "../../../utils/common"
     import { translateText } from "../../../utils/language"
     import Icon from "../../helpers/Icon.svelte"
-    import { encodeFilePath, getFileName, removeExtension } from "../../helpers/media"
+    import { encodeFilePath, getFileName, locateMediaFile, removeExtension } from "../../helpers/media"
     import { getActiveOutputs, setOutput, startFolderTimer } from "../../helpers/output"
     import T from "../../helpers/T.svelte"
     import FloatingInputs from "../../input/FloatingInputs.svelte"
@@ -23,7 +23,9 @@
     let data: { timer?: number } | undefined
     $: data = $projects[$activeProject || ""]?.shows?.[index]?.data
 
-    $: path = encodeFilePath(show.id)
+    let resolvedId = show.id
+    $: if (show.id) resolvedId = show.id
+    $: path = encodeFilePath(resolvedId)
 
     $: activeOutput = getActiveOutputs($outputs, false, true, true)[0]
 
@@ -112,16 +114,23 @@
             await wait(50)
         }
 
-        if (!path) {
+        if (!show.id) {
             loading = false
             return
         }
 
-        const loadPath = path
-        currentPath = path
+        const located = await locateMediaFile(show.id)
+        if (!located?.path) {
+            loading = false
+            return
+        }
+
+        resolvedId = located.path
+        const loadPath = encodeFilePath(resolvedId)
+        currentPath = loadPath
 
         try {
-            loadingTask = getDocument(path)
+            loadingTask = getDocument(loadPath)
             const pdfDoc = await loadingTask.promise
             if (currentPath !== loadPath) return
 
@@ -171,9 +180,13 @@
         }
     }
 
+    $: isConverting = $pdfImports.get(resolvedId || show.id)?.status === "importing"
+
     function convertToImages() {
+        if (isConverting) return
+
         newToast("actions.converting")
-        sendMain(Main.PDF_TO_IMAGE, { filePath: show.id })
+        sendMain(Main.PDF_TO_IMAGE, { filePath: resolvedId || show.id })
     }
 
     $: timer = data?.timer || 0
@@ -216,7 +229,7 @@
 </FloatingInputs> -->
 
     <FloatingInputs>
-        <MaterialButton icon="image" on:click={convertToImages} style="white-space: nowrap;">
+        <MaterialButton icon="image" disabled={isConverting} on:click={convertToImages} style="white-space: nowrap;">
             {#if !$labelsDisabled}<T id="actions.convert_to_images" />{/if}
         </MaterialButton>
 

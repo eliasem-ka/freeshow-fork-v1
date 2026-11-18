@@ -165,7 +165,7 @@ export function logerror(err) {
 
 // stream to OutputShow
 export function toggleRemoteStream() {
-    // get(special).optimizedMode
+    // get(isOptimizedMode)
     if (!isMainWindow()) return
 
     const value = { key: "server", value: false }
@@ -225,6 +225,11 @@ export function triggerFunction(id: string) {
 export function isDarkTheme() {
     const contrastColor = getContrast(get(themes)[get(theme)]?.colors?.primary || "")
     return contrastColor === "#FFFFFF"
+}
+
+// escape any text value, so it can be safely used inside a RegExp as plain text */
+export function escapeRegExp(value: string) {
+    return (value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 const throttled: { [key: string]: any } = {}

@@ -1,10 +1,15 @@
 import { get } from "svelte/store"
 import { uid } from "uid"
+import { OUTPUT } from "../../types/Channels"
 import { Main } from "../../types/IPC/Main"
 import type { Output } from "../../types/Output"
+import type { SaveListSettings, SaveListSyncedSettings } from "../../types/Save"
 import type { Metadata, Themes } from "../../types/Settings"
+import { migrateAudioEffects } from "../audio/effects/audioEffectsHelpers"
+import { initAudioRouting } from "../audio/routing/audioRoutingInit"
 import { clone, keysToID } from "../components/helpers/array"
-import { checkFFmpeg, checkWindowCapture, setOutput, toggleOutputs } from "../components/helpers/output"
+import { checkFFmpeg, checkWindowCapture, setOutput, startScene, toggleOutputs } from "../components/helpers/output"
+import { migrateOutputsRtmp } from "../components/helpers/rtmpDestinations"
 import { defaultThemes } from "../components/settings/tabs/defaultThemes"
 import { sendMain } from "../IPC/main"
 import {
@@ -12,8 +17,10 @@ import {
     actions,
     activePopup,
     activeProject,
+    ai,
     alertUpdates,
     audioChannelsData,
+    audioEffectPresets,
     audioEffects,
     audioFolders,
     audioPlaylists,
@@ -21,13 +28,14 @@ import {
     autoOutput,
     autosave,
     calendarAddShow,
+    calendars,
     categories,
     cloudSyncData,
-    companion,
     contentProviderData,
+    providerItemLinks,
+    customFonts,
     customMetadata,
     customizedIcons,
-    dataPath,
     deletedDefaults,
     disabledServers,
     drawSettings,
@@ -37,10 +45,8 @@ import {
     effects,
     effectsLibrary,
     emitters,
-    eqPresets,
     formatNewShow,
     fullColors,
-    gain,
     globalRegexes,
     globalTags,
     groupNumbers,
@@ -51,6 +57,8 @@ import {
     loaded,
     loadedState,
     lockedOverlays,
+    activeScenes,
+    maxConnections,
     mediaFolders,
     mediaOptions,
     mediaTags,
@@ -59,6 +67,7 @@ import {
     openedFolders,
     os,
     outLocked,
+    outputs,
     overlayCategories,
     overlays,
     playerTags,
@@ -66,14 +75,16 @@ import {
     ports,
     profiles,
     projectView,
-    remotePassword,
     resized,
+    scenes,
+    scriptureSettings,
+    scriptures,
     serverData,
     showRecentlyUsedProjects,
-    showsPath,
     slidesOptions,
     sorted,
     special,
+    splitLines,
     styles,
     templateCategories,
     theme,
@@ -83,16 +94,12 @@ import {
     timeline,
     timerTags,
     timers,
+    transitionData,
     variableTags,
     variables,
     version,
-    videoMarkers,
-    videosData,
-    videosTime
-} from "../stores"
-import { OUTPUT } from "./../../types/Channels"
-import type { SaveListSettings, SaveListSyncedSettings } from "./../../types/Save"
-import { maxConnections, outputs, scriptureSettings, scriptures, splitLines, transitionData, volume } from "./../stores"
+    videoMarkers
+} from "./../stores"
 import { checkForUpdates } from "./checkForUpdates"
 import { isMainWindow, startAutosave } from "./common"
 import { setLanguage } from "./language"
@@ -104,6 +111,14 @@ export function updateSyncedSettings(data: any) {
 
     // pre v1.6.1 (triggers are now actions)
     data = convertTriggersToActions(data)
+
+    // pre v1.6.6
+    if (data.companion) {
+        if (!get(serverData)?.companion) {
+            serverData.update((s) => ({ ...s, companion: data.companion }))
+        }
+        delete data.companion
+    }
 
     Object.entries(data).forEach(([key, value]: any) => {
         if (updateList[key as SaveListSyncedSettings]) updateList[key as SaveListSyncedSettings](value)
@@ -120,6 +135,18 @@ export function updateSettings(data: any) {
     if (data.equalizerConfig && !data.audioEffects?.main) {
         data.audioEffects = { main: { equalizer: clone(data.equalizerConfig) } }
         delete data.equalizerConfig
+    }
+    // pre v1.6.5 (audioEffects was not in stack format)
+    if (data.audioEffects) {
+        data.audioEffects = migrateAudioEffects(data.audioEffects)
+    }
+
+    // pre v1.6.6
+    if (data.remotePassword !== undefined) {
+        if (!data.serverData) data.serverData = {}
+        if (!data.serverData.remote) data.serverData.remote = {}
+        if (!data.serverData.remote.password) data.serverData.remote.password = data.remotePassword
+        delete data.remotePassword
     }
 
     Object.entries(data).forEach(([key, value]: any) => {
@@ -212,13 +239,16 @@ function convertTriggersToActions(data: any) {
     return data
 }
 
-let videoDataUpdating = false
 export function restartOutputs(specificId = "") {
-    const data = clone(get(videosData))
-    const time = clone(get(videosTime))
-
     const allOutputs = keysToID(get(outputs))
-    const outputIds = specificId ? [specificId] : allOutputs.filter((a) => a.enabled).map(({ id }) => id)
+    // offscreen outputs first, so a displayed output can join their render regardless of settings order
+    const rendersOffscreen = (o: Output) => !!(o.ndi || o.omt || o.webrtc || o.rtmp || o.blackmagic || o.invisible)
+    const outputIds = specificId
+        ? [specificId]
+        : allOutputs
+              .filter((a) => a.enabled)
+              .sort((a, b) => Number(rendersOffscreen(b)) - Number(rendersOffscreen(a)))
+              .map(({ id }) => id)
 
     outputIds.forEach((id: string) => {
         const output: Output = get(outputs)[id]
@@ -226,17 +256,6 @@ export function restartOutputs(specificId = "") {
 
         send(OUTPUT, ["CREATE"], { ...output, id })
     })
-
-    if (videoDataUpdating) return
-    videoDataUpdating = true
-
-    // restore output video data when recreating window
-    // WIP values are empty when sent
-    setTimeout(() => {
-        send(OUTPUT, ["DATA"], data)
-        send(OUTPUT, ["TIME"], time)
-        videoDataUpdating = false
-    }, 2200)
 }
 
 export function updateThemeValues(themeValues: Themes) {
@@ -266,31 +285,40 @@ const updateList: { [key in SaveListSettings | SaveListSyncedSettings]: any } = 
         activeProject.set(v)
         if (v) projectView.set(false)
     },
-    showsPath: (v: any) => {
-        if (!v) return
 
-        // DEPRECATED (keep for backward compatibility)
-        showsPath.set(v)
-    },
-    dataPath: (v: any) => {
-        if (!v) return
-
-        // DEPRECATED (keep for backward compatibility)
-        dataPath.set(v)
-    },
     lockedOverlays: (v: any) => {
-        // only get locked overlays
-        v = v.filter((id) => get(overlays)[id]?.locked === true)
+        if (Array.isArray(v)) {
+            const map: { [id: string]: string[] } = {}
+            v.forEach((id) => (map[id] = []))
+            v = map
+        }
 
-        lockedOverlays.set(v)
+        lockedOverlays.set(v || {})
 
-        // start overlays
-        if (v.length) setOutput("overlays", v, false, "", true)
+        // timeout to ensure outputs are initialized
+        setTimeout(() => {
+            Object.entries(v || {}).forEach(([id, outputIds]: any) => {
+                // only get locked overlays
+                if (!get(overlays)[id]?.locked) return
+
+                if (outputIds?.length) outputIds.forEach((outputId: string) => setOutput("overlays", [id], false, outputId, true))
+                else setOutput("overlays", [id], false, "", true)
+            })
+        }, 10)
+    },
+    activeScenes: (v: any) => {
+        activeScenes.set(v || {})
+
+        // timeout to ensure outputs are initialized
+        setTimeout(() => {
+            Object.entries(v || {}).forEach(([id, outputIds]: any) => startScene(id, outputIds))
+        }, 10)
     },
     language: (v: any) => {
         language.set(v)
         setLanguage(v)
     },
+    customFonts: (v: any) => customFonts.set(v),
     alertUpdates: (v: any) => {
         alertUpdates.set(v !== false)
         // make sure "special" is set before checking
@@ -300,7 +328,15 @@ const updateList: { [key in SaveListSettings | SaveListSyncedSettings]: any } = 
     maxConnections: (v: any) => maxConnections.set(v),
     ports: (v: any) => ports.set(v),
     disabledServers: (v: any) => disabledServers.set(v),
-    serverData: (v: any) => serverData.set(v),
+    serverData: (v: any) => {
+        serverData.set(v)
+
+        if (v?.companion?.enabled) {
+            setTimeout(() => {
+                sendMain(Main.WEBSOCKET_START, { port: get(ports).companion, password: v.companion.password })
+            }, 3000)
+        }
+    },
     autosave: (v: any) => {
         autosave.set(v)
         startAutosave()
@@ -309,7 +345,10 @@ const updateList: { [key in SaveListSettings | SaveListSyncedSettings]: any } = 
     outputs: (v: any) => {
         Object.keys(v).forEach((id: string) => {
             delete v[id].out
+            if (v[id].webrtcData?.streaming) v[id].webrtcData.streaming = false
+            if (v[id].rtmpData?.streaming) v[id].rtmpData.streaming = false
         })
+        migrateOutputsRtmp(v)
         outputs.set(v)
 
         // RTMP check
@@ -332,7 +371,6 @@ const updateList: { [key in SaveListSettings | SaveListSyncedSettings]: any } = 
         styles.set(v)
     },
     profiles: (v: any) => profiles.set(v),
-    remotePassword: (v: any) => remotePassword.set(v),
     audioFolders: (v: any) => audioFolders.set(v),
     categories: (v: any) => categories.set(v),
     drawer: (v: any) => drawer.set(v),
@@ -357,17 +395,17 @@ const updateList: { [key in SaveListSettings | SaveListSyncedSettings]: any } = 
     templateCategories: (v: any) => templateCategories.set(v),
     timers: (v: any) => timers.set(v),
     variables: (v: any) => variables.set(v),
+    scenes: (v: any) => scenes.set(v),
     interactions: (v: any) => interactions.set(v),
     audioStreams: (v: any) => audioStreams.set(v),
     audioPlaylists: (v: any) => audioPlaylists.set(v),
     theme: (v: any) => theme.set(v),
     transitionData: (v: any) => transitionData.set(v),
-    volume: (v: any) => volume.set(v),
-    gain: (v: any) => gain.set(v),
     audioChannelsData: (v: any) => audioChannelsData.set(v),
     emitters: (v: any) => emitters.set(v),
     midiIn: (v: any) => actions.set(v),
     videoMarkers: (v: any) => videoMarkers.set(v),
+    calendars: (v: any) => calendars.set(v),
     mediaTags: (v: any) => mediaTags.set(v),
     playerTags: (v: any) => playerTags.set(v),
     actionTags: (v: any) => actionTags.set(v),
@@ -379,20 +417,11 @@ const updateList: { [key in SaveListSettings | SaveListSyncedSettings]: any } = 
     calendarAddShow: (v: any) => calendarAddShow.set(v),
     metronome: (v: any) => metronome.set(v),
     audioEffects: (v: any) => audioEffects.set(v),
-    eqPresets: (v: any) => eqPresets.set(v),
+    audioEffectPresets: (v: any) => audioEffectPresets.set(v),
     effectsLibrary: (v: any) => effectsLibrary.set(v),
     globalTags: (v: any) => globalTags.set(v),
     globalRegexes: (v: any) => globalRegexes.set(v),
     customMetadata: (v: any) => customMetadata.set(v),
-    companion: (v: any) => {
-        companion.set(v)
-
-        if (v.enabled) {
-            setTimeout(() => {
-                sendMain(Main.WEBSOCKET_START, get(ports).companion)
-            }, 3000)
-        }
-    },
     special: (v: any) => {
         if (v.capitalize_words === undefined) v.capitalize_words = "Jesus, Lord" // God
         if (v.autoUpdates) sendMain(Main.AUTO_UPDATE)
@@ -433,6 +462,12 @@ const updateList: { [key in SaveListSettings | SaveListSyncedSettings]: any } = 
         }
         if (Object.keys(deletedDefaultsValue).length) deletedDefaults.set(deletedDefaultsValue)
 
+        // DEPRECATED (migrate) - only in 1.6.5-beta
+        if (v.calendars && !Object.keys(get(calendars)).length) {
+            calendars.set(v.calendars)
+            delete v.calendars
+        }
+
         special.set(v)
     },
     timeline: (v: any) => timeline.set(v),
@@ -442,7 +477,10 @@ const updateList: { [key in SaveListSettings | SaveListSyncedSettings]: any } = 
         if (v?.length > 1) contentProviderData.set({ ...get(contentProviderData), churchApps: { syncCategories: v } })
     },
     contentProviderData: (v: any) => contentProviderData.set(v),
+    providerItemLinks: (v: any) => providerItemLinks.set(v || {}),
     obsData: (v: any) => obsData.set(v),
     effects: (a: any) => effects.set(a),
-    deletedDefaults: (a: any) => deletedDefaults.set({ ...get(deletedDefaults), ...a })
+    deletedDefaults: (a: any) => deletedDefaults.set({ ...get(deletedDefaults), ...a }),
+    audioRouting: (v: any) => initAudioRouting(v),
+    ai: (a: any) => ai.set(a)
 }

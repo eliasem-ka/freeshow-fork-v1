@@ -11,7 +11,7 @@ import { clone, keysToID } from "./array"
 import { history } from "./history"
 import { _updaters } from "./historyHelpers"
 import { addToPos } from "./mover"
-import { getItemsCountByType, isEmptyOrSpecial, mergeWithTemplate, updateLayoutsFromTemplate, updateSlideFromTemplate } from "./output"
+import { getItemsCountByType, isEmptyOrSpecial, mergeWithTemplate, updateActiveSceneOutputs, updateLayoutsFromTemplate, updateSlideFromTemplate } from "./output"
 import { loadShows, saveTextCache } from "./setShow"
 import { getShowCacheId } from "./show"
 import { getItemWithMostLines } from "./showActions"
@@ -60,7 +60,7 @@ function handleUpdate(obj, data, initializing) {
         if (keys && !key) id = "keys"
 
         if (initializing && obj.location.id === "show") customActionActivation("show_created")
-        if (initializing && empty && updater.initialize) data.data = updater.initialize(data.data, id)
+        if (initializing && empty && updater.initialize) data.data = updater.initialize({ ...data.data, ...(data.replace || {}) }, id)
 
         if (initializing && obj.location.id === "project_ref") {
             projects.update((a) => {
@@ -95,6 +95,10 @@ function handleUpdate(obj, data, initializing) {
             else a[id].quickAccess = data.data
             return a
         })
+    }
+
+    if (obj.location?.id === "scene_key" || obj.location?.id === "scene") {
+        updateActiveSceneOutputs(id)
     }
 
     if (!initializing) return
@@ -151,6 +155,11 @@ function handleUpdate(obj, data, initializing) {
 
         if (subkey && index !== undefined && index > -1 && !Array.isArray(a[id]?.[key]?.[subkey])) delete data.previousData
         if (updater.timestamp && a[id]) a[id].modified = Date.now()
+        // update "shows" modified time (mainly needed for cloud sync)
+        if (a[id]?.timestamps) a[id].timestamps.modified = Date.now()
+        else if (updater.store === showsCache && a[id]) {
+            a[id].timestamps = { created: Date.now(), modified: Date.now(), used: null }
+        }
         if (data.previousData === data.data) console.warn(obj.id, "HISTORY:", "Previous data is the same as current data. Try using clone()!")
         return a
     }
@@ -169,8 +178,10 @@ function handleUpdate(obj, data, initializing) {
                 const replacerValue = Array.isArray(newValue) ? newValue[currentIndex] : newValue
                 if (subkey) {
                     value[subkey] = replacerValue
+                    if (key === "items" && subkey !== "autoFontSize") delete value.autoFontSize
                     return value
                 }
+                if (key === "items" && replacerValue) delete replacerValue.autoFontSize
                 return replacerValue
             })
             keyData[id][key] = keyData[id][key].filter((a) => a !== undefined)
@@ -276,6 +287,7 @@ async function handleShows(obj, _data, initializing) {
                 if (replace) {
                     if (initializing) obj.oldData.data[i].show = clone(a[id])
                     a[id] = { ...a[id], ...show }
+                    saveTextCache(id, a[id])
                     const oldName = get(shows)[id]?.name
                     if (show.name !== undefined && oldName && oldName !== show.name) rename[id] = { name: show.name || id, oldName }
                     return
@@ -309,7 +321,7 @@ async function handleShows(obj, _data, initializing) {
                 timestamps: show.timestamps || a[id]?.timestamps,
                 quickAccess: show.quickAccess || a[id]?.quickAccess
             }
-            if (show.origin) a[id].origin = ""
+            if (show.origin) a[id].origin = show.origin
             else if (a[id].origin) delete a[id].origin
             if (show.private) a[id].private = true
             else if (a[id].private) delete a[id].private
@@ -404,9 +416,12 @@ function handleSlides(obj, data, initializing) {
 
     if (!slides[0]) return
 
-    slides = slides.sort((a, b) => (a.index < b.index ? 1 : -1))
-    if (data.layouts) data.layouts.reverse()
-    if (data.layout?.backgrounds?.[1]) data.layout.backgrounds.reverse()
+    const hasIndices = slides.some((s) => s.index !== undefined)
+    if (hasIndices) {
+        slides = slides.sort((a, b) => (a.index < b.index ? 1 : -1))
+        if (data.layouts) data.layouts.reverse()
+        if (data.layout?.backgrounds?.[1]) data.layout.backgrounds.reverse()
+    }
 
     slides.forEach((slide, i) => processSlide(slide, i, { deleting, data, showId, layout, ref, index, type }))
 
@@ -525,6 +540,16 @@ function addSlideToLayout(slide, slideId, slideIndex, i, showId, layout, ref, da
             if (oldIndex < 0) oldIndex = newChildren.length
             newChildren = addToPos(newChildren, [slideId], oldIndex)
             _show(showId).slides([parent.id]).set({ key: "children", value: newChildren })
+
+            showsCache.update((a) => {
+                if (!a[showId]?.layouts?.[layout]?.slides?.[parent.index]) return a
+                if (!a[showId].layouts[layout].slides[parent.index].children) a[showId].layouts[layout].slides[parent.index].children = {}
+
+                const newLayoutValue = clone(layoutValue)
+                delete newLayoutValue.id
+                a[showId].layouts[layout].slides[parent.index].children![slideId] = newLayoutValue
+                return a
+            })
         } else {
             _show(showId).slides([slideId]).set({ key: "group", value: "" })
             _show(showId)
@@ -562,7 +587,7 @@ function createNewSlide(showId, _layout, ref, data, index) {
     }
 
     const slide: Slide = clone({ ...EMPTY_SHOW_SLIDE, items })
-    if (isParent) slide.globalGroup = "verse"
+    if (isParent) slide.globalGroup = data.replace?.globalGroup || "verse"
     else slide.group = null
 
     return { id, ...slide }
@@ -599,6 +624,23 @@ function handleTemplate(obj, data, initializing) {
         if (templateId && !slideId && previousTemplateId !== templateId) _show(data.remember.showId).set({ key: "settings.template", value: slideId ? null : templateId })
 
         const template = clone(get(templates)[templateId])
+
+        // auto generate first empty slide if missing
+        if (template?.settings?.firstSlideTemplate && template?.settings?.createFirstSlide && !slideId) {
+            const layout = data.remember.layout || show.settings?.activeLayout
+            const firstSlide = show.slides[show.layouts?.[layout]?.slides?.[0]?.id]
+            const firstSlideHasText = firstSlide?.items?.some((item) => getItemText(item).trim())
+
+            if (!firstSlide || firstSlideHasText) {
+                const id = uid()
+                show.slides[id] = { ...EMPTY_SHOW_SLIDE, globalGroup: "intro", settings: { template: template.settings.firstSlideTemplate } }
+                if (!show.layouts[layout]) show.layouts[layout] = { name: "", notes: "", slides: [] }
+                show.layouts[layout].slides.unshift({ id })
+                slides = show.slides
+                ref = _show(data.remember.showId).layouts([layout]).ref()[0] || []
+            }
+        }
+
         const maxLines = template?.settings?.maxLinesPerSlide
         if (maxLines !== "0" && !isNaN(Number(maxLines))) {
             slides = splitToMaxLines(Number(maxLines))
@@ -606,7 +648,7 @@ function handleTemplate(obj, data, initializing) {
         }
         const brLongLines = template?.settings?.breakLongLines
         if (brLongLines !== "0" && !isNaN(Number(brLongLines))) {
-            slides = breakLongLines(data.remember.showId, Number(brLongLines))
+            slides = breakLongLines(slides, Number(brLongLines))
             show.slides = slides
         }
         updateSlidesWithTemplate(template)

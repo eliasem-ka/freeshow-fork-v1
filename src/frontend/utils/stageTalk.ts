@@ -9,7 +9,7 @@ import { getCurrentProjectIndexes, getProjectItems } from "../components/helpers
 import { getGroupName, getLayoutRef } from "../components/helpers/show"
 import { _show } from "../components/helpers/shows"
 import { getCustomStageLabel } from "../components/stage/stage"
-import { actions, activeProject, activeShow, events, groups, media, outputs, projects, showsCache, stageShows, timeFormat, timers, variables } from "../stores"
+import { actions, activeProject, activeShow, events, groups, media, metronome, metronomeTimer, outputs, projects, showsCache, stageShows, timeFormat, timers, variables } from "../stores"
 import { connections } from "./../stores"
 import { translateText } from "./language"
 import { send } from "./request"
@@ -62,14 +62,19 @@ async function getNextBackground(currentOutputSlide: OutSlide | null, returnPath
     if (!nextLayout) return {}
 
     const bgId = nextLayout.data.background || ""
-    let path = _show(currentOutputSlide.id).media([bgId]).get()?.[0]?.path || ""
+    const showMediaItem = _show(currentOutputSlide.id).media([bgId]).get()?.[0]
+    let path = showMediaItem?.path || ""
     if (typeof path !== "string") path = ""
 
-    if (returnPath) return { path, mediaStyle: get(media)[path] || {} }
+    const mediaData = get(media)[path]
+    const thumbnail = mediaData?.contentFile?.thumbnail || ""
 
-    const base64path = await getBase64Path(path)
+    if (returnPath) return { path, filePath: path, thumbnail, mediaStyle: mediaData || {} }
 
-    return { path: base64path, filePath: path, mediaStyle: get(media)[path] || {} }
+    const targetPath = thumbnail || path
+    const base64path = await getBase64Path(targetPath)
+
+    return { path: base64path || targetPath, filePath: path, thumbnail, mediaStyle: mediaData || {} }
 }
 
 export const receiveSTAGE = {
@@ -78,10 +83,10 @@ export const receiveSTAGE = {
             .filter((a) => !a.disabled)
             .map((a) => ({ id: a.id, name: a.name, password: !!a.password }))
     },
-    LAYOUT: (data: { id: string }, connectionId: string) => {
+    LAYOUT: (data: { id: string; password?: string }, connectionId: string) => {
         let layout = get(stageShows)[data.id]
-        if (!layout || layout.disabled) return { channel: "ERROR", data: "noShow" }
-        // if (show.password.length && show.password !== data.password) return { channel: "ERROR", data: "wrongPass" }
+        if (!layout || layout.disabled) return { channel: "ERROR", data: { key: "noShow" } }
+        if (layout.password && layout.password !== data.password) return { channel: "ERROR", data: { key: "wrongPass" } }
         setConnectedState("STAGE", connectionId, "active", data.id)
 
         layout = arrayToObject(filterObjectArray(get(stageShows), ["disabled", "name", "settings", "items"]))[data.id]
@@ -92,61 +97,74 @@ export const receiveSTAGE = {
             item.label = getCustomStageLabel(item.type || itemId, item)
         })
 
-        // if (show.disabled) return { id: connectionId, channel: "ERROR", data: "noShow" }
-
         // initial
-        sendData(STAGE, { channel: "OUT" })
-        sendData(STAGE, { channel: "SHOW_DATA" })
+        sendData(STAGE, { id: connectionId, channel: "OUT" })
+        sendData(STAGE, { id: connectionId, channel: "SHOW_DATA" })
         window.api.send(STAGE, { id: connectionId, channel: "TIMERS", data: get(timers) })
         window.api.send(STAGE, { id: connectionId, channel: "EVENTS", data: get(events) })
         window.api.send(STAGE, { id: connectionId, channel: "VARIABLES", data: get(variables) })
+        window.api.send(STAGE, { id: connectionId, channel: "METRONOME", data: get(metronome) })
+        window.api.send(STAGE, { id: connectionId, channel: "METRONOME_TIMER", data: get(metronomeTimer) })
         send(STAGE, ["DATA"], { timeFormat: get(timeFormat) })
 
         // send media items
         Object.values(layout.items).forEach(async (item) => {
-            if (item.type === "media" && item.src) {
-                const data = await getBase64Path(item.src)
-                send(STAGE, ["MEDIA"], { path: item.src, value: data })
-            }
+            if (item.type === "media") sendMediaData(item.src)
         })
 
         return layout
     },
 
-    OUT: (data: any, connectionId: string) => {
-        let stageId = data?.id
-        if (!stageId) stageId = get(connections).STAGE?.[connectionId]?.active
+    OUT: (data: any, connectionId: string = "") => {
+        let stageId = (connectionId ? get(connections).STAGE?.[connectionId]?.active : "") || data?.id || (connectionId ? "" : Object.values(get(connections).STAGE || {}).find((c: any) => c?.active)?.active)
         if (!stageId) return
 
         const stageLayout = get(stageShows)[stageId]
         if (!stageLayout) return
+        if (connectionId && stageLayout.password && get(connections).STAGE?.[connectionId]?.active !== stageId) return
 
-        const outputId = stageLayout.settings.output || getFirstOutput()?.id
+        const sourceOutputId = stageLayout.settings?.output
+        const outputStores = get(outputs)
+        const outputId = sourceOutputId && outputStores[sourceOutputId] ? sourceOutputId : getFirstOutput()?.id
         const output = { ...get(outputs)[outputId], id: outputId }
         if (!output?.out) return
 
         const outSlideId = output.out.slide?.id
-        if (outSlideId) send(STAGE, ["SHOW_DATA"], { id: outSlideId, show: get(showsCache)[outSlideId] })
+        if (outSlideId && outSlideId !== "temp") {
+            const show = get(showsCache)[outSlideId] || _show(outSlideId).get()
+            if (show) send(STAGE, ["SHOW_DATA"], { id: outSlideId, show })
+        }
 
         sendBackgroundToStage(outputId)
         return output
     },
-    SHOW_DATA: (_data: any, connectionId: string) => {
-        const stageId = get(connections).STAGE?.[connectionId]?.active
-        if (!stageId) return
 
-        const stageLayout = get(stageShows)[stageId]
-        if (!stageLayout) return
+    SHOW_DATA: (data: any, connectionId: string = "") => {
+        let outSlideId = data?.id
+        if (!outSlideId) {
+            const stageId = (connectionId ? get(connections).STAGE?.[connectionId]?.active : "") || (connectionId ? "" : Object.values(get(connections).STAGE || {}).find((c: any) => c?.active)?.active)
+            if (connectionId && stageId) {
+                const stageLayout = get(stageShows)[stageId]
+                if (stageLayout?.password && get(connections).STAGE?.[connectionId]?.active !== stageId) return
+            }
 
-        const outputId = stageLayout.settings.output || getFirstOutput()?.id
-        const outSlideId = get(outputs)[outputId]?.out?.slide?.id || ""
-        const show = get(showsCache)[outSlideId]
+            const sourceOutputId = stageId ? get(stageShows)[stageId]?.settings?.output : ""
+            const outputId = sourceOutputId && get(outputs)[sourceOutputId] ? sourceOutputId : getFirstOutput()?.id
+            outSlideId = get(outputs)[outputId || ""]?.out?.slide?.id || ""
+        }
+        if (!outSlideId || outSlideId === "temp") return
+
+        const show = get(showsCache)[outSlideId] || _show(outSlideId).get()
         if (!show) return
 
         // send media items
         Object.values(show.media || {}).forEach(async (media) => {
-            const data = await getBase64Path(media.path || "")
-            send(STAGE, ["MEDIA"], { path: media.path, value: data })
+            sendMediaData(media.path)
+        })
+        Object.values(show.slides || {}).forEach((slide) => {
+            slide.items?.forEach((item) => {
+                if (item.type === "media" && item.src) sendMediaData(item.src)
+            })
         })
 
         return { id: outSlideId, show }
@@ -207,23 +225,14 @@ export const receiveSTAGE = {
         checkWindowCapture()
     },
 
-    RUN_ACTION: (a: { id: string }) => {
+    RUN_ACTION: (a: { id: string }, connectionId: string) => {
+        const stageId = get(connections).STAGE?.[connectionId]?.active
+        const hasPassword = Object.values(get(stageShows) || {}).some((s: any) => s?.password)
+        if (hasPassword && !stageId) return
+
         runAction(get(actions)[a.id], { source: "remote" })
     }
 
-    // REQUEST_VIDEO_DATA: (data: any) => {
-    //     if (!data) data = {}
-
-    //     // WIP don't know the outputId
-    //     // let id = data.outputId
-    //     let outputId = getFirstOutput()?.id
-    //     if (!outputId) return
-
-    //     data.data = get(videosData)[outputId]
-    //     data.time = get(videosTime)[outputId]
-
-    //     return data
-    // },
     // case "SHOW":
     //   data = getStageShow(message.data)
     //   break
@@ -236,6 +245,16 @@ export const receiveSTAGE = {
     // case "OVERLAYS":
     //   data = getOutOverlays()
     //   break
+}
+
+async function sendMediaData(path: string | undefined) {
+    if (!path) return
+
+    // NowPlayingCover can update in real time
+    if (path.includes("NowPlayingCover")) return
+
+    const mediaData = await getBase64Path(path)
+    send(STAGE, ["MEDIA"], { path: path, value: mediaData })
 }
 
 // tracks StageShow connections actively viewing an "Output window" item

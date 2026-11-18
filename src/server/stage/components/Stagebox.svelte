@@ -1,25 +1,25 @@
 <script lang="ts">
-    import { getContext, onDestroy } from "svelte"
+    import { getContext, onDestroy, tick } from "svelte"
     import type { StageLayout } from "../../../types/Stage"
     import Center from "../../common/components/Center.svelte"
     import Icon from "../../common/components/Icon.svelte"
-    import autosize from "../../common/util/autosize"
+    import autosize, { getAutoSizeOptions } from "../../common/util/autosize"
     import { keysToID, sortByName } from "../../common/util/helpers"
     import { getStyles } from "../../common/util/style"
+    import { getDynamicValue, replaceDynamicValues } from "../helpers/show"
+    import { getItemText } from "../helpers/textStyle"
     import Clock from "../items/Clock.svelte"
+    import MetronomeVisualizer from "../items/MetronomeVisualizer.svelte"
     import SlideNotes from "../items/SlideNotes.svelte"
     import SlideProgress from "../items/SlideProgress.svelte"
     import SlideText from "../items/SlideText.svelte"
-    import VideoTime from "../items/VideoTime.svelte"
     import { _getDynamicValue } from "../util/itemHelpers"
     import { activeTimers, background, media, output, outputSlideCache, progressData, stream, timers, variables } from "../util/stores"
-    import { getDynamicValue, replaceDynamicValues } from "../helpers/show"
     import MediaOutput from "./MediaOutput.svelte"
     import PreviewCanvas from "./PreviewCanvas.svelte"
     import Textbox from "./Textbox.svelte"
     import Timer from "./Timer.svelte"
     import Variable from "./Variable.svelte"
-    import { getItemText } from "../helpers/textStyle"
 
     export let stageLayout: StageLayout
     export let id: string
@@ -49,13 +49,16 @@
         clearInterval(cssInterval)
     })
 
-    let itemStyles: any = getStyles(item.style, true)
+    let itemStyles: any = {}
+    $: itemStyles = getStyles(item.style, true)
     $: fontSize = Number(itemStyles?.["font-size"] || 0) || 100 // item.autoFontSize ||
+
+    $: isAutoSized = item?.type === "text" ? (item.textFit || "none") !== "none" : item?.textFit !== "none"
 
     // dynamic resolution
     let resolution = { width: window.innerWidth, height: window.innerHeight }
 
-    $: style = item.auto ? removeFontSize(item.style) : item.style
+    $: style = isAutoSized ? removeFontSize(item.style) : item.style
     function removeFontSize(style: string) {
         let fontSizeIndex = style.indexOf("font-size")
         if (fontSizeIndex < 0) return style
@@ -64,7 +67,7 @@
     }
 
     // custom dynamic size
-    let newSizes = `;
+    $: newSizes = `;
         top: ${(itemStyles.top / 1080) * resolution.height}px;
         left: ${(itemStyles.left / 1920) * resolution.width}px;
         width: ${(itemStyles.width / 1920) * resolution.width}px;
@@ -73,26 +76,23 @@
 
     let alignElem: HTMLElement | undefined
     let size = 100
-    $: if (alignElem && (item || $progressData)) size = autosize(alignElem, { type: "growToFit", textQuery: ".autoFontSize" })
-    $: autoSize = fontSize !== 100 ? Math.max(fontSize, size) : size
+    $: if (alignElem && isAutoSized && (item || $progressData || currentSlide)) updateSize()
+    async function updateSize() {
+        // wait for DOM to reflect new content before measuring
+        await tick()
+        if (!alignElem) return
+
+        const type = item?.textFit || "growToFit"
+        const isTextboxItem = (item?.type || "text") === "text"
+        const { defaultFontSize, maxFontSize } = getAutoSizeOptions(type, itemStyles?.["font-size"], isTextboxItem)
+
+        size = autosize(alignElem, { type, textQuery: ".autoFontSize", defaultFontSize, maxFontSize })
+    }
+    $: autoSize = isAutoSized ? size : fontSize
 
     $: slideOffset = item.type ? Number(item.slideOffset || 0) : id.includes("next") ? 1 : 0
 
     $: isDisabledVariable = id.includes("variables") && $variables[id.split("#")[1]]?.enabled === false
-
-    // request video time
-    let videoTime: number = 0
-    // $: if (id.includes("video")) requestVideoData()
-    // let interval: any = null
-    // function requestVideoData() {
-    //     if (interval) return
-    //     // USE API ?!?
-    //     interval = setInterval(() => send("REQUEST_VIDEO_DATA"), 1000)
-    //     // interval = setInterval(() => socket.emit("STAGE", { id: socketId, channel: "REQUEST_VIDEO_DATA" }), 1000)
-    // }
-    // onDestroy(() => {
-    //     if (interval) clearInterval(interval)
-    // })
 
     let firstTimerId: string = ""
     $: if (item.type === "timer" || id.includes("first_active_timer")) {
@@ -108,7 +108,7 @@
         const textStyleKeys = ["line-height", "text-decoration"]
         // For slide_text items with autosize, exclude font-size from container style
         // to prevent CSS inheritance of 800px (MAX_FONT_SIZE) before autosize computes correct value
-        const isSlideTextWithAutosize = item?.type === "slide_text" && (item?.auto !== false || (item?.textFit && item?.textFit !== "none"))
+        const isSlideTextWithAutosize = item?.type === "slide_text" && item?.textFit !== "none"
 
         itemStyle = ""
         textStyle = ""
@@ -192,11 +192,12 @@
         <div class="label">{item.label || ""}</div>
     {/if}
 
-    <div bind:this={alignElem} class="align" style="--align: {item.align};--text-align: {item.alignX};{item.type !== 'slide_text' || item.keepStyle ? 'height: 100%;' : ''}">
+    <div bind:this={alignElem} class="align" style="--align: {item.align};--text-align: {item.alignX || 'center'};{item.type !== 'slide_text' || item.keepStyle ? 'height: 100%;' : ''}">
         <span style="pointer-events: none;width: 100%;height: 100%;">
             {#if item.type === "current_output" || id.includes("current_output")}
+                {@const currentSource = item.currentOutput?.source || stageLayout?.settings?.output}
                 <!-- width gets squished when resized -->
-                <PreviewCanvas outputId={stageLayout?.settings?.output} capture={getStreamCapture($stream, stageLayout?.settings?.output)} />
+                <PreviewCanvas outputId={currentSource} capture={getStreamCapture($stream, currentSource)} />
             {:else if item.type === "slide_text" || id.includes("slide")}
                 {@const slideBackground = slideOffset === 0 ? currentBackground : slideOffset === 1 ? currentBackground.next : null}
 
@@ -207,44 +208,43 @@
                 {#if currentSlide}
                     {#key item || currentSlide}
                         <!-- autoStage={show.settings.autoStretch !== false} -->
-                        <SlideText {currentSlide} {slideOffset} stageItem={item} chords={typeof item.chords === "boolean" ? item.chords : item.chords?.enabled} autoSize={item.textFit !== "none" && item.auto !== false} {fontSize} autoStage {textStyle} style={item.type ? item.keepStyle : false} />
+                        <SlideText {currentSlide} {slideOffset} stageItem={item} chords={typeof item.chords === "boolean" ? item.chords : item.chords?.enabled} autoSize={isAutoSized} {fontSize} autoStage {textStyle} style={item.type ? item.keepStyle : false} />
                     {/key}
                 {/if}
             {:else if item.type === "slide_notes" || id.includes("notes")}
-                <SlideNotes {currentSlide} {slideOffset} autoSize={item.auto !== false ? autoSize : fontSize} />
+                <SlideNotes {currentSlide} {slideOffset} {autoSize} />
             {:else if item.type === "text"}
-                <Textbox {item} showId={id} autoSize={item.auto === true || (item.textFit && item.textFit !== "none")} {fontSize} />
+                <Textbox {item} showId={id} autoSize={isAutoSized} {fontSize} />
                 <!-- STAGE VV -->
             {:else if item.type === "slide_tracker" || id.includes("slide_tracker")}
-                <SlideProgress tracker={item.tracker || {}} autoSize={item.auto !== false ? autoSize : fontSize} />
+                <SlideProgress tracker={item.tracker || {}} {autoSize} />
             {:else if item.type === "clock" || id.includes("clock")}
-                <Clock autoSize={item.auto !== false ? autoSize : fontSize} style={false} {...item.clock} />
+                <Clock {autoSize} style={false} {...item.clock} />
             {:else if item.type === "timer"}
-                <Timer {item} id={item.timer?.id || item.timerId || firstTimerId || ""} {today} style={item.auto === false ? "" : `font-size: ${item.auto !== false ? autoSize : fontSize}px;`} />
+                <Timer {item} id={item.timer?.id || item.timerId || firstTimerId || ""} {today} style="font-size: {autoSize}px;" />
+            {:else if item.type === "metronome" || id.includes("metronome")}
+                <MetronomeVisualizer isItem />
             {:else if item.type === "media"}
-                <MediaOutput path={$media[item.src] || item.src} />
+                <MediaOutput path={item.src?.includes("NowPlayingCover") ? item.src : $media[item.src] || item.src} />
             {:else if item.type === "camera"}
                 <Center faded>
                     <Icon id="noImage" size={8} white />
                 </Center>
             {:else if item.type}
                 <!-- probably unused -->
-                <Textbox {item} showId={id} fontSize={item.auto !== false ? autoSize : fontSize} />
-                <!-- <SlideItems item={stageItemToItem(item)} ref={{ type: "stage", id }} fontSize={item.auto !== false ? autoSize : fontSize} /> -->
+                <Textbox {item} showId={id} fontSize={autoSize} />
             {:else}
                 <!-- OLD CODE -->
                 <div>
-                    {#if id.includes("video")}
-                        <VideoTime {videoTime} autoSize={item.auto !== false ? autoSize : fontSize} />
-                    {:else if id.includes("first_active_timer")}
-                        <Timer {item} id={firstTimerId} {today} style="font-size: {item.auto !== false ? autoSize : fontSize}px;" />
+                    {#if id.includes("first_active_timer")}
+                        <Timer {item} id={firstTimerId} {today} style="font-size: {autoSize}px;" />
                     {:else if id.includes("timers")}
                         {#if $timers[id.split("#")[1]]}
-                            <Timer {item} id={id.split("#")[1]} {today} style="font-size: {item.auto !== false ? autoSize : fontSize}px;" />
+                            <Timer {item} id={id.split("#")[1]} {today} style="font-size: {autoSize}px;" />
                         {/if}
                     {:else if id.includes("variables")}
                         {#if $variables[id.split("#")[1]]}
-                            <Variable id={id.split("#")[1]} style="font-size: {item.auto !== false ? autoSize : fontSize}px;" />
+                            <Variable id={id.split("#")[1]} style="font-size: {autoSize}px;" />
                         {/if}
                     {:else}
                         {id}

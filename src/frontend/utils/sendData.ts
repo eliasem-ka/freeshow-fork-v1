@@ -3,7 +3,7 @@ import { CONTROLLER, REMOTE, STAGE } from "../../types/Channels"
 import type { ClientMessage, Clients } from "../../types/Socket"
 import { API_ACTIONS } from "../components/actions/api"
 import { checkWindowCapture } from "../components/helpers/output"
-import { connections, remotePassword, shows } from "../stores"
+import { connections, serverData, shows } from "../stores"
 import { isMainWindow } from "./common"
 import { receiveCONTROLLER } from "./controllerTalk"
 import { receiveREMOTE } from "./remoteTalk"
@@ -68,19 +68,22 @@ export async function sendData(id: Clients, msg: ClientMessage, check = false) {
         channel = "API"
     }
 
-    let connectionId = msg.id
-    if (!connectionId) connectionId = Object.keys(get(connections)[id] || {})[0]
+    let connectionId = msg.id || ""
 
     // when a REMOTE password is set, only honor control/API messages from connections that have authenticated
-    if (id === REMOTE && get(remotePassword).length) {
+    if (id === REMOTE && get(serverData)?.remote?.password) {
         const PRE_AUTH_CHANNELS = ["PASSWORD", "ACCESS"]
         if (!PRE_AUTH_CHANNELS.includes(channel)) {
-            const entered = get(connections).REMOTE?.[connectionId || ""]?.entered
-            if (!entered) return
+            const entered = connectionId ? get(connections).REMOTE?.[connectionId]?.entered : false
+            if (connectionId && !entered) return
+            if (channel === "API" && !entered) return
         }
     }
 
     if (channel === "API") {
+        if (id !== REMOTE && id !== STAGE) return
+        if (id === REMOTE && get(serverData)?.remote?.password && !get(connections).REMOTE?.[connectionId]?.entered) return
+
         if (!msg.data) msg.data = {}
         const apiId = msg.api || ""
         const data = await API_ACTIONS[apiId]?.(msg.data)
@@ -151,7 +154,7 @@ function checkSent(id: Clients, msg: any): boolean {
 // send data per connection to all
 export function eachConnection(id: Clients, channel: any, callback: any) {
     Object.entries(get(connections)[id] || {}).forEach(async ([clientID, value]: any) => {
-        const data = await callback(value)
+        const data = await callback({ id: clientID, ...value })
         if (data) window.api.send(id, { id: clientID, channel, data })
     })
 }

@@ -1,8 +1,8 @@
 import { get } from "svelte/store"
 import type { History, HistoryNew, HistoryTypes } from "../../../types/History"
-import { activePage, historyCacheCount, isDev, undoHistory } from "../../stores"
+import { activePage, activeProject, activeShow, contextActive, historyCacheCount, isDev, outputs, projects, undoHistory } from "../../stores"
 import { redoHistory } from "./../../stores"
-import { clone } from "./array"
+import { areObjectsEqual, clone } from "./array"
 import { historyActions } from "./historyActions"
 import { createStore, createStoreHistory, deleteStore, deleteStoreHistory, updateStore, updateStoreHistory } from "./historyStores"
 import { deselect } from "./select"
@@ -21,6 +21,19 @@ export function historyAwait(s: string[], obj: History) {
         .catch((e) => {
             console.error(e)
         })
+}
+
+function isNoDataChange(obj: History) {
+    if (obj.id === "UPDATE") {
+        const data = obj.newData || {}
+        // deleting/creating entries only carry one of the values
+        if (data.previousData === undefined || data.data === undefined) return false
+        if (typeof data.previousData !== "object" || data.previousData === null || typeof data.data !== "object" || data.data === null) return data.previousData === data.data
+        return areObjectsEqual(data.previousData, data.data)
+    }
+
+    if (!obj.oldData || !obj.newData || typeof obj.oldData !== "object" || typeof obj.newData !== "object") return false
+    return areObjectsEqual(obj.oldData, obj.newData)
 }
 
 export function history(obj: History, shouldUndo: null | boolean = null) {
@@ -83,11 +96,14 @@ export function history(obj: History, shouldUndo: null | boolean = null) {
                 }
                 break
             case "slide":
+                const prevLayoutRef = _show(showID).layouts([obj.location.layout!]).ref()[0] || []
                 old = {
                     slides: _show(showID).set({ key: "slides", value: obj.newData.slides }),
                     layout: _show(showID).layouts([obj.location.layout!]).set({ key: "slides", value: obj.newData.layout })[0]?.value,
                     media: _show(showID).set({ key: "media", value: obj.newData.media || _show(showID).get("media") || {} })
                 }
+                const newLayoutRef = _show(showID).layouts([obj.location.layout!]).ref()[0] || []
+                updateOutputSlideIndexes(showID, obj.location.layout!, prevLayoutRef, newLayoutRef)
                 break
 
             // show
@@ -176,9 +192,9 @@ export function history(obj: History, shouldUndo: null | boolean = null) {
     if (old && !shouldUndo && !obj.oldData) obj.oldData = old
 
     if (obj.save === false) return
+    // don't create a history entry (or clear the redo stack) if nothing changed
+    if (shouldUndo === null && isNoDataChange(obj)) return
     if (shouldUndo === null) redoHistory.set([])
-
-    // TODO: remove history obj if oldData is exactly the same as newdata
 
     // if (obj.id !== "SAVE") {
     // TODO: go to location
@@ -191,7 +207,6 @@ export function history(obj: History, shouldUndo: null | boolean = null) {
         } else activePage.set(obj.location!.page)
     }
 
-    // TODO: slide text edit, dont override different style keys!
     // }
 
     if (shouldUndo) {
@@ -205,14 +220,17 @@ export function history(obj: History, shouldUndo: null | boolean = null) {
         })
     } else {
         undoHistory.update((uh: any) => {
+            const lastEntry = uh[uh.length - 1]
+            // only coalesce entries changing the same key, otherwise the other key's change would be lost on undo
+            const sameKeys = lastEntry?.newData?.style?.key === obj.newData?.style?.key && lastEntry?.newData?.key === obj.newData?.key && lastEntry?.newData?.subkey === obj.newData?.subkey
             // if id and location is equal push new data to previous stored
             // not: project | newProject | newFolder | addShowToProject | slide
-            if (shouldUndo === null && (override.includes(obj.id) || obj.location?.override) && uh[uh.length - 1]?.id === obj.id && JSON.stringify(Object.values(uh[uh.length - 1]?.location || {})) === JSON.stringify(Object.values(obj.location || {}))) {
+            if (shouldUndo === null && sameKeys && (override.includes(obj.id) || obj.location?.override) && lastEntry?.id === obj.id && JSON.stringify(Object.values(lastEntry?.location || {})) === JSON.stringify(Object.values(obj.location || {}))) {
                 // override, but keep previousData!!!
                 const newestData = obj.newData
-                if (newestData?.previousData) newestData.previousData = uh[uh.length - 1].newData.previousData
-                uh[uh.length - 1].newData = newestData
-                uh[uh.length - 1].time = Date.now()
+                if (newestData?.previousData) newestData.previousData = lastEntry.newData.previousData
+                lastEntry.newData = newestData
+                lastEntry.time = Date.now()
             } else {
                 // add to start if redo
                 // if (undo === false) uh = [obj, ...uh]
@@ -227,9 +245,21 @@ export function history(obj: History, shouldUndo: null | boolean = null) {
         })
     }
 
+    // restore correct opened project item when undoing (currently directed at undoing a Placeholder replacement)
+    if (obj.id === "UPDATE" && obj.location?.page === "show" && (obj.newData?.key === "shows" || obj.oldData?.key === "shows")) {
+        const projectId = obj.oldData?.id || obj.newData?.id || get(activeProject)
+        if (projectId && get(activeProject) === projectId) {
+            const showIndex = get(activeShow)?.index
+            const item = get(projects)[projectId]?.shows?.[showIndex ?? -1]
+            if (showIndex !== undefined && showIndex !== null && item?.type === "show_placeholder") {
+                activeShow.set({ id: item.id, type: "show_placeholder", index: showIndex })
+            }
+        }
+    }
+
     // deselect selected
-    // not when changing multiple selected slides OR changing slide transition
-    if (obj.location?.page !== "edit" && obj.id !== "SHOW_LAYOUT" && obj.id !== "setItems") {
+    // not when in edit mode, changing slide layouts/items (changing multiple selected slides OR changing slide transition), or when context menu is active
+    if (obj.location?.page !== "edit" && obj.id !== "SHOW_LAYOUT" && obj.id !== "setItems" && !get(contextActive)) {
         deselect()
     }
 
@@ -338,3 +368,29 @@ export const redo = () => {
 //   fromState: 2,
 //   page: "shows",
 // },
+
+// change outputted slide indexes when show layout changes, so it reflects the new layout slides position correctly
+function updateOutputSlideIndexes(showId: string | undefined, layoutId: string, prevRef: any[], newRef: any[]) {
+    if (!showId || !prevRef.length || !newRef.length) return
+
+    outputs.update((a) => {
+        Object.keys(a).forEach((outputId) => {
+            const outSlide = a[outputId]?.out?.slide
+            if (!outSlide || outSlide.id !== showId || outSlide.layout !== layoutId || outSlide.index === undefined) return
+
+            const targetSlideId = prevRef[outSlide.index]?.id
+            if (!targetSlideId) return
+
+            // find the correct slide index in case there are multiple slides with the same ID
+            const occurrence = prevRef.slice(0, outSlide.index).filter((item) => item?.id === targetSlideId).length
+            const newMatches = newRef.map((item, i) => (item?.id === targetSlideId ? i : -1)).filter((i) => i !== -1)
+            const newIndex = newMatches[occurrence] ?? newMatches[0]
+
+            if (newIndex !== undefined && newIndex !== outSlide.index) {
+                outSlide.index = newIndex
+                outSlide.silentIndexUpdate = true
+            }
+        })
+        return a
+    })
+}

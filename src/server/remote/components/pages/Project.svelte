@@ -177,18 +177,19 @@
                                                 <Icon id={showType} box={showType === "ppt" ? 50 : 24} right />
                                                 <p>{showType}</p>
                                             </div>
-                                        {:else if showData}
-                                            <div class="show-button-wrapper" class:active={($active.type || "show") === "show" && $activeShow?.id === showData.id}>
+                                        {:else if showId}
+                                            {@const itemShow = showData || { id: showId, name: show.name, private: false }}
+                                            <div class="show-button-wrapper" class:active={($active.type || "show") === "show" && $activeShow?.id === showId}>
                                                 <ShowButton
                                                     class="project-show-button"
                                                     on:click={(e) => {
-                                                        _set("active", show)
+                                                        _set("active", { id: e.detail, type: "show" })
                                                         _set("activeTab", "show")
                                                         send("SHOW", e.detail)
                                                     }}
                                                     activeShow={($active.type || "show") === "show" && $activeShow}
-                                                    show={showData}
-                                                    icon={showData.private ? "private" : "slide"}
+                                                    show={itemShow}
+                                                    icon={itemShow.private ? "private" : "slide"}
                                                 />
                                             </div>
                                         {/if}
@@ -359,7 +360,7 @@
     }
 
     .section-card {
-        background-color: var(--primary-darkest);
+        background-color: var(--primary-darker);
         border: 1px solid var(--primary-lighter);
         border-left: 0;
         border-radius: 10px;
@@ -376,7 +377,7 @@
         letter-spacing: 0.05em;
         text-transform: uppercase;
         opacity: 0.85;
-        background: rgb(0 0 0 / 0.25);
+        background: var(--primary-darkest);
         border-bottom: 1px solid var(--primary-lighter);
     }
 
@@ -409,11 +410,11 @@
     }
 
     :global(.section-item-button:hover) {
-        background-color: rgb(255 255 255 / 0.05) !important;
+        background-color: var(--hover) !important;
     }
 
     :global(.section-item-button.active) {
-        background-color: rgb(255 255 255 / 0.08) !important;
+        background-color: var(--focus) !important;
         box-shadow: inset 4px 0 0 var(--secondary) !important;
     }
 
@@ -471,11 +472,11 @@
     }
 
     .show-button-wrapper:hover {
-        background-color: rgb(255 255 255 / 0.05);
+        background-color: var(--hover);
     }
 
     .show-button-wrapper.active {
-        background-color: rgb(255 255 255 / 0.08);
+        background-color: var(--focus);
         box-shadow: inset 4px 0 0 var(--secondary);
     }
 
@@ -607,10 +608,10 @@
         display: flex !important;
         align-items: center !important;
         gap: 0.45em;
-        background-color: rgba(25, 25, 35, 0.92) !important;
-        border: 2px solid rgba(255, 255, 255, 0.1) !important;
+        background-color: var(--primary-darker) !important;
+        border: 2px solid var(--primary-lighter) !important;
+        color: var(--text) !important;
         box-shadow: 1px 1px 6px rgb(0 0 0 / 0.4);
-        backdrop-filter: blur(3px);
     }
 
     :global(.floating-edit-input span) {
@@ -619,7 +620,7 @@
     }
 
     :global(.floating-edit-input:hover) {
-        background-color: rgba(35, 35, 55, 0.95) !important;
+        background-color: var(--hover) !important;
         transform: translateY(-1px);
     }
 

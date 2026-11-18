@@ -23,6 +23,7 @@ type PCORequestData = {
     scope: PCOScopes
     endpoint: string
     params?: Record<string, string>
+    allPages?: boolean // a list endpoint returns 25 records per page: follow the pages
 }
 
 type SongSection = {
@@ -105,8 +106,8 @@ function parseChordChartIntoSections(chordChart: string): SongSection[] {
         if (isPlanningCenterKeywordLine(trimmed)) continue
 
         // Detect section headers (VERSE, CHORUS, BRIDGE, etc.)
-        // Order matters: longer patterns first (PRECORO before PRE, INSTRUMENTAL before INTRO)
-        const sectionMatch = trimmed.match(/^\[?(PRE-CHORUS|PRECHORUS|PRECORO|ESTRIBILLO|INSTRUMENTAL|PUENTE|VERSE|CHORUS|VERSO|CORO|BRIDGE|INTRO|OUTRO|FINAL|PRE|BREAK|TAG|VAMP|INTERLUDE|BREAKDOWN|TURNAROUND|REFRAIN)(\s*\d+)?\]?(?:\s|$)/i)
+        // Order matters: longer patterns first (PRECORO before PRE, INSTRUMENTAL before INTRO, VERSE before VERS)
+        const sectionMatch = trimmed.match(/^\[?(POST-CHORUS|POSTCHORUS|POST-CORO|POSTCORO|PRE-CHORUS|PRECHORUS|PRE-CORO|PRECORO|INSTRUMENTAL|ESTRIBILLO|BREAKDOWN|TURNAROUND|INTERLUDE|REFRENG|REFRAIN|ENDING|PUENTE|CHORUS|VERSE|VERSO|BRIDGE|INTRO|OUTRO|FINAL|BREAK|HOOK|VAMP|POST|VERS|CORO|PRE|TAG)(\s*\d+)?\]?(?:\s|$)/i)
         if (sectionMatch) {
             // Save previous section if exists (including sections with only chords)
             if (currentSectionLabel) {
@@ -190,6 +191,7 @@ interface ProjectItem {
         item_type: string
         title?: string
         description?: string
+        html_details?: string | null
         length?: number
     }
     relationships: {
@@ -242,6 +244,12 @@ export async function pcoRequest(data: PCORequestData, attempt = 0): Promise<any
             // Convert to array for consistent handling
             if (!Array.isArray(resultData)) resultData = [resultData]
 
+            const nextOffset = data.allPages ? result.meta?.next?.offset : undefined
+            if (nextOffset !== undefined) {
+                pcoRequest({ ...data, params: { ...(data.params || {}), offset: String(nextOffset) } }).then((rest) => resolve(rest ? [...resultData, ...rest] : resultData))
+                return
+            }
+
             resolve(resultData)
         })
 
@@ -266,7 +274,7 @@ export async function pcoRequest(data: PCORequestData, attempt = 0): Promise<any
 const ONE_WEEK_MS = 604800000
 
 async function buildPcoTree(includePlans: boolean): Promise<PCOFolderTreeNode[]> {
-    const rawFolders = await pcoRequest({ scope: "services", endpoint: "folders" })
+    const rawFolders = await pcoRequest({ scope: "services", endpoint: "folders", allPages: true })
     const folderMap = new Map<string, PCOFolderTreeNode>()
     const rootNodes: PCOFolderTreeNode[] = []
 
@@ -285,7 +293,7 @@ async function buildPcoTree(includePlans: boolean): Promise<PCOFolderTreeNode[]>
     if (rawFolders?.length) {
         await Promise.all(
             rawFolders.map(async (f: PCOFolder) => {
-                const stList = await pcoRequest({ scope: "services", endpoint: `folders/${f.id}/service_types` })
+                const stList = await pcoRequest({ scope: "services", endpoint: `folders/${f.id}/service_types`, allPages: true })
                 if (!stList) return
                 await Promise.all(
                     stList.map(async (st: ServiceType) => {
@@ -299,7 +307,7 @@ async function buildPcoTree(includePlans: boolean): Promise<PCOFolderTreeNode[]>
         )
     }
 
-    const allServiceTypes = await pcoRequest({ scope: "services", endpoint: "service_types" })
+    const allServiceTypes = await pcoRequest({ scope: "services", endpoint: "service_types", allPages: true })
     if (allServiceTypes) {
         await Promise.all(
             allServiceTypes.map(async (st: ServiceType) => {
@@ -372,7 +380,7 @@ function expandFolderIds(allFolders: PCOFolder[], syncFolderIds: string[]): stri
 
 async function getServiceTypesForFolders(rawFolders: PCOFolder[], syncFolderIds: string[]): Promise<ServiceType[]> {
     const expandedIds = expandFolderIds(rawFolders, syncFolderIds)
-    const results = await Promise.all(expandedIds.map((id) => pcoRequest({ scope: "services", endpoint: `folders/${id}/service_types` })))
+    const results = await Promise.all(expandedIds.map((id) => pcoRequest({ scope: "services", endpoint: `folders/${id}/service_types`, allPages: true })))
     const seen = new Set<string>()
     return (results.flat() as ServiceType[]).filter((st) => st?.id && !seen.has(st.id) && !!seen.add(st.id))
 }
@@ -381,7 +389,7 @@ export async function pcoLoadServices(syncFolderIds?: string[]) {
     let serviceTypes: ServiceType[]
 
     if (syncFolderIds?.length) {
-        const rawFolders = await pcoRequest({ scope: "services", endpoint: "folders" })
+        const rawFolders = await pcoRequest({ scope: "services", endpoint: "folders", allPages: true })
         if (!rawFolders) {
             console.info("Could not fetch Planning Center folders")
             return
@@ -416,7 +424,8 @@ async function fetchServiceTypes() {
     const typesEndpoint = "service_types"
     const serviceTypes = await pcoRequest({
         scope: "services",
-        endpoint: typesEndpoint
+        endpoint: typesEndpoint,
+        allPages: true
     })
 
     if (!serviceTypes || !serviceTypes[0]?.id) {
@@ -560,12 +569,7 @@ async function processSongItem(item: ProjectItem, itemsEndpoint: string) {
     let sections: SongSection[] = []
 
     // Get sections from API first
-    const apiSections: SongSection[] = (
-        await pcoRequest({
-            scope: "services",
-            endpoint: `${arrangementEndpoint}/sections`
-        })
-    )[0]?.attributes.sections || []
+    const apiSections: SongSection[] = (await pcoRequest({ scope: "services", endpoint: `${arrangementEndpoint}/sections` }))[0]?.attributes.sections || []
 
     // Parse sections from chord chart if available (contains repeat markers etc.)
     const chordChartSections = song.chord_chart ? parseChordChartIntoSections(song.chord_chart) : []
@@ -936,9 +940,34 @@ function expandRepeatedSectionLines(lines: ParsedSectionLine[]): ParsedSectionLi
     return expandedLines.filter((line) => !line.hidden)
 }
 
+// don't parse generic item "html_details" with custom chords/groups
+function parsePlainTextLines(text: string): ParsedSectionLine[] {
+    return text.split(/\r?\n/).map((line) => ({ text: line.trim() }))
+}
+
+function htmlDetailsToSections(html: string): SongSection[] {
+    if (!html) return []
+
+    // change <br> into newline chars, and remove all HTML tags
+    let text = html.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "")
+
+    // OpenLP users typically included [===] to mark new slides, we use empty lines
+    text = text.replace(/^\s*\[=+\]/gm, "")
+
+    const sections = parseChordChartIntoSections(text)
+    if (sections.length) return sections
+
+    return text
+        .split(/\n{2,}/)
+        .map((b) => b.trim())
+        .filter(Boolean)
+        .map((lyrics) => ({ label: "", lyrics }))
+}
+
 function processRegularItem(item: ProjectItem) {
     const showId = `pcosong_${item.id}`
-    const show = getShow(item, {}, [])
+    const sections = item.attributes.html_details ? htmlDetailsToSections(item.attributes.html_details) : []
+    const show = getShow(item, {}, sections, "generic")
 
     return {
         show: { id: showId, ...show },
@@ -1005,11 +1034,11 @@ function getDateTitle(dateString: string) {
 
 const itemStyle = "left:50px;top:120px;width:1820px;height:840px;"
 
-function getShow(SONG_DATA: any, SONG: any, SECTIONS: any[]) {
+function getShow(SONG_DATA: any, SONG: any, SECTIONS: any[], type = "") {
     const slides: { [key: string]: Slide } = {}
     const layoutSlides: SlideData[] = []
     SECTIONS.forEach((section) => {
-        const sectionLines = parseSectionLines(section.lyrics || "")
+        const sectionLines = type === "generic" ? parsePlainTextLines(section.lyrics || "") : parseSectionLines(section.lyrics || "")
         const wholeSectionRepeatCount = getWholeSectionRepeatCount(sectionLines)
         const parsedLines = wholeSectionRepeatCount > 1 ? sectionLines.filter((line) => !line.hidden) : expandRepeatedSectionLines(sectionLines)
 
@@ -1061,7 +1090,7 @@ function getShow(SONG_DATA: any, SONG: any, SECTIONS: any[]) {
 
     const show: Show = {
         name: title,
-        category: "planning_center",
+        category: `planning_center${type ? `_${type}` : ""}`,
         timestamps: { created: new Date(SONG.created_at).getTime() || Date.now(), modified: new Date(SONG.updated_at).getTime() || null, used: null },
         meta: metadata,
         settings: {

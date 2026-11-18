@@ -1,245 +1,343 @@
 import { get } from "svelte/store"
-import type { AudioChannel } from "../../types/Audio"
-import { AUDIO, OUTPUT } from "../../types/Channels"
-import { audioEffects, disabledServers, media, outputs, playingAudio, playingVideos, serverData, special, videosData } from "../stores"
-import { isOutputWindow } from "../utils/common"
-import { send } from "../utils/request"
-import { AudioAnalyserMerger } from "./audioAnalyserMerger"
+import { getFirstOutput } from "../components/helpers/output"
+import { disabledServers, media, playingAudio, playingVideos, serverData } from "../stores"
+import { AudioMicrophone } from "./audioMicrophone"
 import { AudioMultichannel, MultichannelInfo } from "./audioMultichannel"
 import { AudioPlayer } from "./audioPlayer"
 import { AudioProcessor, PitchShiftNode } from "./audioProcessor"
-import { initializeCompressor } from "./effects/audioCompressor"
-import { initializeDelay } from "./effects/audioDelay"
-import { connectAudioSourceToEqualizer, disconnectAudioSourceFromEqualizer, getConnectedSourceOutput, initializeEqualizer, setAutoInitializeCallback } from "./effects/audioEqualizer"
-import { initializeFilter } from "./effects/audioFilter"
-import { initializeLimiter } from "./effects/audioLimiter"
-import { initializeNoiseGate } from "./effects/audioNoiseGate"
-import { initializeReverb } from "./effects/audioReverb"
-import { initializeStereoShaper } from "./effects/audioStereoShaper"
+import { AudioSender } from "./audioSender"
+import { MIN_DB } from "./dBUtils"
+import { AudioInputCapture } from "./routing/audioInputCapture"
+import { AudioRoutingManager } from "./routing/audioRoutingManager"
+
+// NOTE: we don't have access to analyse audio from Website/YouTube/Vimeo (But the "Desktop audio" input is a good workaround)
 
 export class AudioAnalyser {
     static sampleRate = 48000 // Hz
     static channels = AudioMultichannel.DEFAULT_CHANNELS // default left/right, will be updated dynamically
     static maxChannels = AudioMultichannel.MAX_CHANNELS // support up to 8 channels (7.1 surround)
     static recorderFrameRate = 24 // fps
-    // WIP set recorder send time delay?
 
-    private static ac = new AudioContext({ latencyHint: "interactive", sampleRate: this.sampleRate })
+    private static ac = new AudioContext({ latencyHint: "playback" })
     private static splitter: ChannelSplitterNode | null = null
     private static analysers: AnalyserNode[] = []
-    private static sources: { [key: string]: AudioNode } = {}
-    private static processors: { [key: string]: PitchShiftNode } = {}
-    private static gainNodes: { [key: string]: GainNode } = {}
-    private static timeDomainArray = new Uint8Array(256)
+    private static sources: Record<string, AudioNode> = {}
+    private static processors: Record<string, PitchShiftNode> = {}
+    private static gainNodes: Record<string, GainNode> = {}
+    private static sourceVolumes: Record<string, number> = {}
+    private static destinationNodes = new Map<string, GainNode>()
+    private static elementSources = new WeakMap<HTMLMediaElement, AudioNode>()
+    private static attachedInputIds = new Map<string, string[]>()
 
-    // Expose the AudioContext for other audio systems to use the same context
+    private static volumeBuffer = new Float32Array(256)
+    private static isContextSynced = false
+
     static getAudioContext(): AudioContext {
-        if (this.ac.state === "suspended") {
-            this.ac.resume().catch(() => {})
+        if (this.ac.state === "suspended") this.ac.resume().catch(() => {})
+
+        if (!this.isContextSynced) {
+            this.isContextSynced = true
+            try {
+                AudioRoutingManager.getInstance().setAudioContext(this.ac)
+            } catch {}
         }
+
         return this.ac
     }
 
-    // Set up auto-initialization for equalizer when first audio source connects
-    static {
-        setAutoInitializeCallback(async () => {
-            await initializeEqualizer(this.getAudioContext(), async () => {
-                await this.refreshEqualizerConnections()
-            })
-        })
-
-        playingAudio.subscribe(() => this.updateScales())
-        playingVideos.subscribe(() => this.updateScales())
-        videosData.subscribe(() => this.updateScales())
+    static resumeContext() {
+        if (this.ac.state === "suspended") this.ac.resume().catch(() => {})
     }
 
-    static async attach(id: string, audio: HTMLMediaElement | MediaStream) {
-        if (this.sources[id]) return
+    private static createSourceNode(audio: HTMLMediaElement | MediaStream): AudioNode {
+        if (audio instanceof MediaStream) return this.ac.createMediaStreamSource(audio)
+        let source = this.elementSources.get(audio)
+        if (!source) {
+            source = this.ac.createMediaElementSource(audio)
+            this.elementSources.set(audio, source)
+        }
+        return source
+    }
 
-        if (this.ac.state === "suspended") {
-            this.ac.resume().catch(() => {})
+    static hasSource(id: string, outputId?: string): boolean {
+        const key = outputId ? `${id}_${outputId}` : id
+        return !!this.sources[key] || !!this.gainNodes[key]
+    }
+
+    static getActiveSourceIds(): string[] {
+        return Object.keys(this.sources)
+    }
+
+    static updateSource(id: string, audio: HTMLMediaElement | MediaStream, outputId?: string) {
+        const key = outputId ? `${id}_${outputId}` : id
+        const sourceGain = this.gainNodes[key]
+        if (!sourceGain) {
+            this.attach(id, audio, outputId)
+            return
         }
 
-        let source: AudioNode
-        try {
-            if (audio instanceof MediaStream) source = this.ac.createMediaStreamSource(audio)
-            else source = this.ac.createMediaElementSource(audio)
-
-            const audioChannel = get(special).audioChannel || ""
-            if (audioChannel === "mono_left" || audioChannel === "mono_right") {
-                const merger = this.ac.createChannelMerger(2)
-                const channel = audioChannel === "mono_left" ? 0 : 1
-                source.connect(merger, 0, channel)
-                this.sources[id] = merger
-            } else {
-                this.sources[id] = source
+        const oldSource = this.sources[key]
+        if (oldSource) {
+            let isShared = false
+            for (const [k, node] of Object.entries(this.sources)) {
+                if (k !== key && node === oldSource) {
+                    isShared = true
+                    break
+                }
             }
+            try {
+                if (isShared) oldSource.disconnect(sourceGain)
+                else oldSource.disconnect()
+            } catch {}
+        }
+        try {
+            const newSource = this.createSourceNode(audio)
+            this.sources[key] = newSource
+            newSource.connect(sourceGain)
+        } catch (err) {
+            console.error("Could not update media source:", err)
+        }
+    }
+
+    static async attach(id: string, audio: HTMLMediaElement | MediaStream, outputId?: string) {
+        const key = outputId ? `${id}_${outputId}` : id
+        if (this.sources[key]) return
+
+        if (this.ac.state === "suspended") await this.ac.resume().catch(() => {})
+
+        try {
+            this.sources[key] = this.createSourceNode(audio)
         } catch (err) {
             console.error("Could not create media source:", err)
             return
         }
 
-        // Start the pipeline immediately with the current channel count (no blocking)
+        AudioRoutingManager.getInstance().setAudioContext(this.getAudioContext())
         this.initAnalysers()
-        this.initRecorder()
-        this.customOutput(get(special).audioOutput)
+        this.recorderActivate()
 
-        const eqOutputNode = await connectAudioSourceToEqualizer(id, this.sources[id])
-
-        if (eqOutputNode && this.splitter) {
-            const processor = AudioProcessor.createNode(this.ac)
-            this.processors[id] = processor
-
-            // Create individual gain node to control this source's volume in Web Audio
-            const sourceGain = this.ac.createGain()
-            this.gainNodes[id] = sourceGain
-            const initialVolume = audio instanceof HTMLMediaElement ? audio.volume : 1.0
-            sourceGain.gain.setValueAtTime(initialVolume, this.ac.currentTime)
-
-            eqOutputNode.connect(sourceGain)
-            sourceGain.connect(processor.input)
-            this.connectToSinks(processor)
-
-            const mediaData = get(media)[id]
-            if (mediaData) {
-                processor.pitch = mediaData.pitch ?? 0
-                processor.tempo = mediaData.tempo ?? 1
-            }
-
-            this.updateScales()
-        } else {
-            console.warn(`Failed to connect audio source "${id}" to equalizer`)
+        let streamChannelCount = 2
+        if (audio instanceof MediaStream) {
+            const [track] = audio.getAudioTracks()
+            const settings = track?.getSettings()
+            const cap = (track as any)?.getCapabilities?.()
+            const devId = id.startsWith("mic_sub_") ? id.replace("mic_sub_", "") : ""
+            streamChannelCount = Math.max(1, cap?.channelCount?.max || settings?.channelCount || (devId ? AudioMicrophone.channelCountCache.get(devId) : undefined) || 2)
         }
 
-        // Detect true channel count in the background — upgrades the graph if the file
-        // has more channels than the current default. Does not delay playback startup.
+        const processor = AudioProcessor.createNode(this.ac)
+        if (streamChannelCount > 2) {
+            processor.configureMultichannel(streamChannelCount)
+        }
+        this.processors[key] = processor
+
+        const sourceGain = this.ac.createGain()
+        if (streamChannelCount > 2) {
+            AudioMultichannel.configureNodeForMultichannel(sourceGain, streamChannelCount)
+        }
+        this.gainNodes[key] = sourceGain
+        const initialVolume = this.sourceVolumes[key] ?? this.sourceVolumes[id] ?? (audio instanceof HTMLMediaElement ? audio.volume : 1.0)
+        sourceGain.gain.setValueAtTime(initialVolume, this.ac.currentTime)
+
+        this.sources[key].connect(sourceGain)
+        sourceGain.connect(processor.input)
+
+        const nodeIds = this.getInputNodeIds(id, outputId)
+        this.attachedInputIds.set(key, nodeIds)
+        this.connectGain(processor, id, outputId)
+
+        setTimeout(() => AudioRoutingManager.getInstance().updateRoutingNodes(), 100)
+
+        const path = AudioPlayer.getPath(id)
+        const mediaData = get(media)[path] || get(media)[id]
+        if (mediaData) {
+            const pitch = mediaData.pitch ?? 0
+            const tempo = mediaData.tempo ?? 1
+            if ((pitch !== 0 || tempo !== 1) && !AudioProcessor.isRegistered(this.ac)) {
+                AudioProcessor.register(this.ac).catch(() => {})
+            }
+            processor.pitch = pitch
+            processor.tempo = tempo
+        }
+
         this.detectAndUpgradeChannels(id, audio)
     }
 
-    static setSourceVolume(id: string, volume: number) {
-        if (this.ac.state === "suspended") {
-            this.ac.resume().catch(() => {})
-        }
-        const gainNode = this.gainNodes[id]
-        if (gainNode) {
-            const activeCount = Object.values(get(playingAudio)).filter((a) => !a.paused).length + Object.values(get(playingVideos)).filter((v) => !v.video?.paused && !v.video?.muted).length
-            const scale = activeCount > 0 ? 1 / Math.sqrt(activeCount) : 1
-            gainNode.gain.setValueAtTime(volume * scale, this.ac.currentTime)
+    static setSourceVolume(id: string, volume: number, outputId?: string) {
+        if (this.ac.state === "suspended") this.ac.resume().catch(() => {})
+        if (outputId) this.sourceVolumes[`${id}_${outputId}`] = volume
+        else this.sourceVolumes[id] = volume
+
+        const keys = Object.keys(this.gainNodes)
+        const prefix = `${id}_`
+        for (let i = 0; i < keys.length; i++) {
+            const k = keys[i]
+            if (outputId ? k === `${id}_${outputId}` : k === id || k.startsWith(prefix)) {
+                this.sourceVolumes[k] = volume
+                this.gainNodes[k]?.gain.setValueAtTime(volume, this.ac.currentTime)
+            }
         }
     }
 
-    private static updateScales() {
-        const activeCount = Object.values(get(playingAudio)).filter((a) => !a.paused).length + Object.values(get(playingVideos)).filter((v) => !v.video?.paused && !v.video?.muted).length
-        const scale = activeCount > 0 ? 1 / Math.sqrt(activeCount) : 1
+    static rampSourceVolume(id: string, targetVolume: number, durationMs: number, outputId?: string) {
+        if (this.ac.state === "suspended") this.ac.resume().catch(() => {})
+        if (outputId) this.sourceVolumes[`${id}_${outputId}`] = targetVolume
+        else this.sourceVolumes[id] = targetVolume
 
-        Object.keys(this.gainNodes).forEach((id) => {
-            const gainNode = this.gainNodes[id]
-            if (gainNode) {
-                let baseVolume: number | null = null
-                const audioPlaying = get(playingAudio)[id]
-                if (audioPlaying) {
-                    baseVolume = audioPlaying.audio?.volume ?? 1.0
-                } else {
-                    const videoPlaying = get(playingVideos).find((v) => v.id === id)
-                    if (videoPlaying) baseVolume = videoPlaying.video?.volume ?? 1.0
+        const keys = Object.keys(this.gainNodes)
+        const prefix = `${id}_`
+        const rampDuration = Math.max(0.01, durationMs / 1000)
+        const endTime = this.ac.currentTime + rampDuration
+
+        for (let i = 0; i < keys.length; i++) {
+            const k = keys[i]
+            if (outputId ? k === `${id}_${outputId}` : k === id || k.startsWith(prefix)) {
+                const node = this.gainNodes[k]
+                if (node) {
+                    try {
+                        node.gain.cancelScheduledValues(this.ac.currentTime)
+                        node.gain.setValueAtTime(node.gain.value, this.ac.currentTime)
+                        node.gain.linearRampToValueAtTime(targetVolume, endTime)
+                    } catch {
+                        node.gain.setValueAtTime(targetVolume, this.ac.currentTime)
+                    }
                 }
-                if (baseVolume !== null) gainNode.gain.setValueAtTime(baseVolume * scale, this.ac.currentTime)
             }
-        })
+        }
     }
 
     private static detectAndUpgradeChannels(id: string, audio: HTMLMediaElement | MediaStream) {
         if (audio instanceof HTMLMediaElement && audio.src) {
             AudioMultichannel.detectFileChannelCount(audio.src, this.maxChannels)
                 .then((channels) => {
-                    if (channels > this.channels) {
-                        this.updateChannelCount(channels)
-                    }
+                    if (channels > this.channels) this.updateChannelCount(channels)
                 })
-                .catch((err) => {
-                    console.debug(`Channel detection skipped for "${id}":`, err)
-                })
+                .catch((err) => console.debug(`Channel detection skipped for "${id}":`, err))
         } else if (audio instanceof MediaStream) {
             const ch = audio.getAudioTracks()[0]?.getSettings().channelCount
             if (ch && ch > this.channels) this.updateChannelCount(ch)
         }
     }
 
-    static detach(id: string) {
-        const source = this.sources[id]
+    static detach(id: string, outputId?: string) {
+        const key = outputId ? `${id}_${outputId}` : id
+        const source = this.sources[key]
         if (!source) return
 
-        const processor = this.processors[id]
-        const outputNode = processor || getConnectedSourceOutput(id) || source
+        const processor = this.processors[key]
+        const nodeIds = this.attachedInputIds.get(key) || this.getInputNodeIds(id, outputId)
+        this.attachedInputIds.delete(key)
+
+        this.disconnectGain(processor || source, id, outputId)
+
+        const currentAudio = get(playingAudio)
+        const currentVideos = get(playingVideos)
+        const playingKeys = Object.keys(currentAudio)
+        let stillPlayingDrawer = false
+        let stillPlayingPlaylist = false
+
+        for (let i = 0; i < playingKeys.length; i++) {
+            const k = playingKeys[i]
+            if (k !== id && currentAudio[k]?.isMic !== true) {
+                if (currentAudio[k]?.playlistId) stillPlayingPlaylist = true
+                else stillPlayingDrawer = true
+            }
+        }
+
+        let stillPlayingVideo = false
+        for (let i = 0; i < currentVideos.length; i++) {
+            if (currentVideos[i].path !== id) {
+                stillPlayingVideo = true
+                break
+            }
+        }
+
+        for (let i = 0; i < nodeIds.length; i++) {
+            const nodeId = nodeIds[i]
+            if (nodeId === "drawer_audio" && stillPlayingDrawer) continue
+            if (nodeId === "playlists_default" && stillPlayingPlaylist) continue
+            if (nodeId === "output_window" && stillPlayingVideo) continue
+
+            AudioInputCapture.getInstance().removeInput(nodeId)
+        }
 
         this.recorderDeactivate()
-        this.disconnectFromSinks(outputNode)
 
-        // Disconnect and remove processor
-        if (processor) {
-            delete this.processors[id]
-        }
+        try {
+            processor?.dispose()
+        } catch {}
 
-        const sourceGain = this.gainNodes[id]
-        if (sourceGain) {
-            try {
-                sourceGain.disconnect()
-            } catch (e) {}
-            delete this.gainNodes[id]
-        }
+        const targetGainNode = this.gainNodes[key]
+        try {
+            this.gainNodes[key]?.disconnect()
+        } catch {}
 
-        // Disconnect from equalizer
-        disconnectAudioSourceFromEqualizer(id)
+        delete this.processors[key]
+        delete this.gainNodes[key]
+        delete this.sourceVolumes[key]
+        delete this.sourceVolumes[id]
+        delete this.sources[key]
 
-        delete this.sources[id]
-
-        if (!isOutputWindow()) return
-
-        // wait for audio to clear before checking
-        setTimeout(() => {
-            if (!this.shouldAnalyse()) {
-                AudioAnalyserMerger.stop()
-                send(OUTPUT, ["AUDIO_MAIN"], { id: Object.keys(get(outputs))[0], stop: true })
+        let isShared = false
+        for (const s of Object.values(this.sources)) {
+            if (s === source) {
+                isShared = true
+                break
             }
-        })
+        }
+
+        try {
+            if (isShared && targetGainNode) source.disconnect(targetGainNode)
+            else source.disconnect()
+        } catch {}
     }
 
     static shouldAnalyse() {
         return this.getActiveAudio() || this.getActiveVideos() || this.sendOutputShowAudio()
     }
+
     private static getActiveAudio() {
-        return !!Object.values(get(playingAudio)).filter((a) => !a.paused).length
-    }
-    private static getActiveVideos() {
-        return !!Object.values(get(playingVideos)).filter((a) => !a.video?.paused && !a.video?.muted).length
-    }
-    private static sendOutputShowAudio() {
-        return get(disabledServers).output_stream === false && get(serverData)?.output_stream?.sendAudio
+        const playing = get(playingAudio)
+        for (const key in playing) {
+            if (!playing[key].paused) return true
+        }
+        return false
     }
 
-    // https://stackoverflow.com/questions/48930799/connecting-nodes-with-each-other-with-the-web-audio-api
-    private static initAnalysers() {
-        if (this.analysers.length) {
-            AudioAnalyserMerger.init()
-            return
+    private static getActiveVideos() {
+        const videos = get(playingVideos)
+        for (let i = 0; i < videos.length; i++) {
+            const v = videos[i]
+            if (!v.audio?.paused && !v.audio?.muted) return true
         }
+        return false
+    }
+
+    private static getOutputShowId(): string | null {
+        return get(serverData)?.output_stream?.outputId || getFirstOutput()?.id || null
+    }
+
+    private static sendOutputShowAudio() {
+        return get(disabledServers).output_stream === false && !!get(serverData)?.output_stream?.sendAudio && !!this.getOutputShowId()
+    }
+
+    private static initAnalysers() {
+        if (this.analysers.length) return AudioPlayer.initCheckLoop()
 
         if (!this.splitter) {
             this.splitter = AudioMultichannel.createChannelSplitter(this.ac, this.channels)
         }
 
-        const MERGER = AudioMultichannel.createChannelMerger(this.ac, this.channels)
-
-        // analyse left/right channels individually
-        ;[...Array(this.channels)].forEach((_, channel) => {
-            const analyser = (this.analysers[channel] = this.ac.createAnalyser())
+        this.analysers = new Array(this.channels)
+        for (let ch = 0; ch < this.channels; ch++) {
+            const analyser = this.ac.createAnalyser()
             analyser.smoothingTimeConstant = 0.85
             analyser.fftSize = 256
-            this.splitter!.connect(analyser, channel)
-            this.splitter!.connect(MERGER, channel, channel)
-        })
+            this.splitter.connect(analyser, ch)
+            this.analysers[ch] = analyser
+        }
 
-        AudioAnalyserMerger.init()
+        AudioPlayer.initCheckLoop()
     }
 
     // MULTI CHANNEL
@@ -256,372 +354,163 @@ export class AudioAnalyser {
         return AudioMultichannel.getMaxSupportedChannels(this.ac, this.maxChannels)
     }
 
-    // update channel count and reinitialize audio nodes
     static updateChannelCount(newChannelCount: number) {
-        const validatedChannelCount = AudioMultichannel.validateChannelCount(newChannelCount)
-        if (!AudioMultichannel.shouldUpdateChannelCount(this.channels, validatedChannelCount)) return
+        const validated = AudioMultichannel.validateChannelCount(newChannelCount)
+        if (!AudioMultichannel.shouldUpdateChannelCount(this.channels, validated)) return
 
-        // disconnect existing connections
-        if (this.splitter) {
-            try {
-                this.splitter.disconnect()
-            } catch (err) {
-                // already disconnected
-            }
-        }
+        try {
+            this.splitter?.disconnect()
+        } catch {}
 
         this.analysers = []
-        this.channels = validatedChannelCount
+        this.channels = validated
         this.splitter = AudioMultichannel.createChannelSplitter(this.ac, this.channels)
 
-        if (this.destNode) AudioMultichannel.configureNodeForMultichannel(this.destNode, this.channels)
-        if (this.gainNode) AudioMultichannel.configureNodeForMultichannel(this.gainNode, this.channels)
+        for (const dest of this.destinationNodes.values()) {
+            AudioMultichannel.configureNodeForMultichannel(dest, this.channels)
+        }
 
         this.reconnectAllSources()
     }
 
     private static reconnectAllSources() {
-        Object.keys(this.sources).forEach((id) => {
-            try {
-                const source = this.sources[id]
-                if (!source) return
+        for (const id of Object.keys(this.sources)) {
+            const processor = this.processors[id]
+            if (!processor || !this.splitter) continue
 
-                const eqOutputNode = getConnectedSourceOutput(id)
-                if (!eqOutputNode || !this.splitter) return
-
-                eqOutputNode.connect(this.splitter)
-                this.connectGain(eqOutputNode)
-                this.connectDestination(eqOutputNode)
-            } catch (err) {
-                console.error(`Failed to reconnect source ${id}:`, err)
-            }
-        })
+            const isMic = get(playingAudio)[id]?.isMic || id.startsWith("mic_sub_")
+            if (!isMic) processor.output.connect(this.splitter)
+            this.connectGain(processor, id)
+        }
 
         this.initAnalysers()
     }
 
-    private static gainNode: GainNode | null = null
-    private static effectNodes: { [K: string]: { input: GainNode; output: GainNode } } = {}
+    private static applyProcessorProperty(id: string, outputId: string | undefined, prop: "pitch" | "tempo", value: number) {
+        const key = outputId ? `${id}_${outputId}` : id
+        const keys = Object.keys(this.processors)
+        const prefix = `${id}_`
 
-    private static initGain() {
-        if (this.gainNode) return
-
-        this.gainNode = AudioMultichannel.createMultichannelGainNode(this.ac, this.channels)
-        this.gainNode.gain.value = AudioPlayer.getGain()
-        this.rebuildEffectChain()
-
-        // Rebuild chain when any effect is toggled (not on param changes)
-        let prevEnabled = ""
-        audioEffects.subscribe(() => {
-            const m = get(audioEffects).main
-            const enabled = [m?.filter, m?.noiseGate, m?.compressor, m?.reverb, m?.delay, m?.limiter, m?.stereoShaper].map((e) => (e?.enabled ? 1 : 0)).join("")
-            if (enabled !== prevEnabled) {
-                prevEnabled = enabled
-                this.rebuildEffectChain()
+        for (let i = 0; i < keys.length; i++) {
+            const k = keys[i]
+            if (k === key || k === id || k.startsWith(prefix)) {
+                this.processors[k][prop] = value
             }
-        })
+        }
     }
 
-    private static rebuildEffectChain() {
-        if (!this.gainNode) return
+    static setPitch(id: string, value: number, outputId?: string) {
+        this.applyProcessorProperty(id, outputId, "pitch", value)
+    }
+    static setTempo(id: string, value: number, outputId?: string) {
+        this.applyProcessorProperty(id, outputId, "tempo", value)
+    }
+
+    static getInputNodeIds(id?: string, outputId?: string): string[] {
+        if (!id) return ["drawer_audio"]
+        if (id === "metronome") return ["metronome"]
+
+        const audioPlaying = get(playingAudio)[id]
+        const videoPlaying = get(playingVideos).some((v) => v.path === id)
+        const isMic = audioPlaying?.isMic === true || id.startsWith("mic_sub_")
+        const isVideo = videoPlaying || id.startsWith("output_win_sub_") || !!outputId
+
+        if (isMic) return [id, "mic_default"]
+        if (isVideo) {
+            return outputId ? ["output_window", `output_win_sub_${outputId}`] : ["output_window"]
+        }
+
+        const playlistId = audioPlaying?.playlistId
+        if (playlistId) {
+            return [`playlist_sub_${playlistId}`, "playlists_default"]
+        }
+
+        return ["drawer_audio"]
+    }
+
+    static connectGain(source: AudioNode | PitchShiftNode, id?: string, outputId?: string) {
+        const node = source instanceof PitchShiftNode ? source.output : source
+        const key = outputId ? `${id}_${outputId}` : id || ""
+        const nodeIds = (key && this.attachedInputIds.get(key)) || this.getInputNodeIds(id, outputId)
+
+        const manager = AudioRoutingManager.getInstance()
+        for (let i = 0; i < nodeIds.length; i++) {
+            manager.registerInputNode(nodeIds[i], node)
+        }
+        manager.updateRoutingNodes()
+    }
+
+    static disconnectGain(source: AudioNode | PitchShiftNode, id?: string, outputId?: string) {
+        const node = source instanceof PitchShiftNode ? source.output : source
+        const key = outputId ? `${id}_${outputId}` : id || ""
+        const nodeIds = (key && this.attachedInputIds.get(key)) || this.getInputNodeIds(id, outputId)
+
+        const manager = AudioRoutingManager.getInstance()
+        for (let i = 0; i < nodeIds.length; i++) {
+            manager.unregisterInputNode(nodeIds[i], node)
+        }
 
         try {
-            this.gainNode.disconnect()
-        } catch {
-            /* not yet connected */
+            node.disconnect()
+        } catch {}
+    }
+
+    static getOrCreateDestinationNode(targetId: string): GainNode {
+        const ctx = (this.ac ??= AudioAnalyser.getAudioContext())
+        let destNode = this.destinationNodes.get(targetId)
+        if (!destNode || destNode.context !== ctx) {
+            destNode = AudioMultichannel.createMultichannelGainNode(ctx, this.channels)
+            this.destinationNodes.set(targetId, destNode)
+            AudioRoutingManager.getInstance().setDestinationNode(targetId, destNode)
         }
-        for (const node of Object.values(this.effectNodes))
-            try {
-                node.output.disconnect()
-            } catch {}
-
-        const main = get(audioEffects).main
-        const chain: { input: GainNode; output: GainNode }[] = []
-
-        if (main?.filter?.enabled) chain.push((this.effectNodes.filter ??= initializeFilter(this.ac)))
-        if (main?.noiseGate?.enabled) chain.push((this.effectNodes.noiseGate ??= initializeNoiseGate(this.ac)))
-        if (main?.compressor?.enabled) chain.push((this.effectNodes.compressor ??= initializeCompressor(this.ac)))
-        if (main?.reverb?.enabled) chain.push((this.effectNodes.reverb ??= initializeReverb(this.ac)))
-        if (main?.delay?.enabled) chain.push((this.effectNodes.delay ??= initializeDelay(this.ac)))
-        if (main?.limiter?.enabled) chain.push((this.effectNodes.limiter ??= initializeLimiter(this.ac)))
-        if (main?.stereoShaper?.enabled) chain.push((this.effectNodes.stereoShaper ??= initializeStereoShaper(this.ac)))
-
-        let prev: AudioNode = this.gainNode
-        for (const seg of chain) {
-            prev.connect(seg.input)
-            prev = seg.output
-        }
-        prev.connect(this.ac.destination)
+        return destNode
     }
 
-    static setGain(value: number) {
-        if (!this.gainNode) this.initGain()
-        this.gainNode!.gain.value = Math.max(1, value)
-    }
-
-    static setPitch(id: string, value: number) {
-        const processor = this.processors[id]
-        if (processor) {
-            processor.pitch = value
-        }
-    }
-
-    static setTempo(id: string, value: number) {
-        const processor = this.processors[id]
-        if (processor) {
-            processor.tempo = value
-        }
-    }
-
-    static connectToSinks(source: AudioNode | PitchShiftNode) {
-        if (!this.splitter) return
-        source.connect(this.splitter)
-        this.connectGain(source)
-        this.connectDestination(source)
-    }
-
-    static disconnectFromSinks(source: AudioNode | PitchShiftNode) {
-        const node = source instanceof PitchShiftNode ? source.output : source
-        try {
-            if (this.splitter) node.disconnect(this.splitter)
-        } catch (e) {
-            /* ignore */
-        }
-        this.disconnectGain(source)
-        this.disconnectDestination(source)
-    }
-
-    static connectGain(source: AudioNode | PitchShiftNode) {
-        this.initGain()
-        const node = source instanceof PitchShiftNode ? source.output : source
-        node.connect(this.gainNode!)
-    }
-
-    static disconnectGain(source: AudioNode | PitchShiftNode) {
-        if (!this.gainNode) return
-        const node = source instanceof PitchShiftNode ? source.output : source
-        try {
-            node.disconnect(this.gainNode)
-        } catch (err) {
-            // Node was already disconnected, ignore the error
-        }
-    }
-
-    private static destNode: MediaStreamAudioDestinationNode | null = null
-    private static initDestination() {
-        if (this.destNode) return
-
-        this.destNode = AudioMultichannel.createMultichannelDestination(this.ac, this.channels)
-    }
-
-    static connectDestination(source: AudioNode | PitchShiftNode) {
-        this.initDestination()
-        const node = source instanceof PitchShiftNode ? source.output : source
-        AudioMultichannel.configureNodeForMultichannel(node, this.channels)
-        node.connect(this.destNode!)
-    }
-
-    static disconnectDestination(source: AudioNode | PitchShiftNode) {
-        if (!this.destNode) return
-        const node = source instanceof PitchShiftNode ? source.output : source
-        try {
-            node.disconnect(this.destNode)
-        } catch (err) {
-            // Node was already disconnected, ignore the error
-        }
-    }
-
-    // RECORDER
-    private static recorder: MediaRecorder | null = null
-    private static initRecorder() {
-        if (this.recorder || !this.recorderActive) return
-        this.initDestination()
-
-        const id = isOutputWindow() ? Object.keys(get(outputs))[0] : "main"
-        // might only work in "main" for OutputShow
-
-        try {
-            this.recorder = new MediaRecorder(this.destNode!.stream, {
-                mimeType: 'audio/webm; codecs="opus"'
-            })
-            this.recorder.addEventListener("dataavailable", async (ev) => {
-                const arrayBuffer = await ev.data.arrayBuffer()
-                const uint8Array = new Uint8Array(arrayBuffer)
-                // , audioDelay: 0, channels: this.channels, frameRate: this.recorderFrameRate
-                const icecast = { enabled: !!get(special).icecastEnabled, host: get(special).icecastHost, port: get(special).icecastPort, mount: get(special).icecastMount, password: get(special).icecastPassword }
-
-                send(AUDIO, ["CAPTURE"], { id, buffer: uint8Array, icecast })
-            })
-
-            if (this.recorder.state === "paused") this.recorder.play()
-            else if (this.recorder.state !== "recording") {
-                this.recorder.start(Math.round(1000 / this.recorderFrameRate))
-            }
-        } catch (err) {
-            console.error(`[AudioAnalyser] Failed to start MediaRecorder:`, err)
-        }
-    }
-
-    private static recorderActive = false
+    // RECORDER & AUDIO SENDER DELEGATION
     static recorderActivate() {
-        if (!this.shouldBeActive()) return
-
-        if (this.ac.state === "suspended") {
-            this.ac.resume().catch(() => {})
-        }
-
-        this.recorderActive = true
-        this.initRecorder()
+        AudioSender.activate(this.getAudioContext(), (targetId) => this.getOrCreateDestinationNode(targetId))
     }
     static recorderDeactivate() {
-        if (this.shouldBeActive() || !this.recorder) return
-
-        this.recorderActive = false
-        this.recorder.stop()
-        this.recorder = null
-    }
-
-    private static shouldBeActive() {
-        let outputList = Object.values(get(outputs))
-        if (isOutputWindow()) outputList = [Object.values(get(outputs))[0]]
-
-        // any outputs with webrtc streaming enabled
-        if (outputList.find((a) => a && a.enabled && a.webrtc)) return true
-
-        // any outputs with rtmp streaming enabled
-        if (outputList.find((a) => a && a.enabled && a.rtmp)) return true
-
-        // any outputs with ndi enabled
-        if (outputList.find((a) => a && a.enabled && a.ndi)) return true
-
-        // any outputs with blackmagic enabled (audio always enabled for blackmagic)
-        if (outputList.find((a) => a && a.enabled && a.blackmagic)) return true
-
-        // Icecast streaming enabled
-        if (get(special).icecastEnabled) return true
-
-        return false
-    }
-
-    // custom audio output (supported in Chrome 110+)
-    // https://developer.chrome.com/blog/audiocontext-setsinkid/
-    // this applies to both audio & video
-    static async customOutput(sinkId: string) {
-        try {
-            await (this.ac as any).setSinkId(sinkId || "")
-            return true
-        } catch (err) {
-            console.error("Could not set custom audio sink ID:", err)
-            return false
-        }
+        AudioSender.deactivate()
     }
 
     // CHANNEL
 
-    static getChannelsVolume() {
-        const volumes: AudioChannel[] = []
-        for (let channel = 0; channel < this.channels; channel++) {
-            volumes.push(this.getChannelVolume(channel))
-        }
-        return volumes
-    }
+    static getChannelLiveVolume(channelId: string): number {
+        const analysers = this.getAnalysers(channelId)
+        if (!analysers?.length) return MIN_DB
 
-    private static getChannelVolume(channelIndex: number): AudioChannel {
-        const analyser = this.analysers[channelIndex]
-        if (!analyser) return { dB: { value: AudioAnalyserMerger.dBmin } }
+        const analyser = analysers[0]
+        const size = analyser.fftSize
+        if (this.volumeBuffer.length !== size) this.volumeBuffer = new Float32Array(size)
 
-        analyser.minDecibels = AudioAnalyserMerger.dBmin
-        analyser.maxDecibels = AudioAnalyserMerger.dBmax
+        analyser.getFloatTimeDomainData(this.volumeBuffer)
 
-        const size = analyser.fftSize // 256
-        if (this.timeDomainArray.length !== size) {
-            this.timeDomainArray = new Uint8Array(size)
-        }
-        const array = this.timeDomainArray
-
-        // analyze amplitude values in time domain
-        analyser.getByteTimeDomainData(array)
-
-        // calculate RMS value to represent perceived volume
-        let sumOfSquares = 0
-        const len = array.length
+        let sumSquare = 0
+        const len = this.volumeBuffer.length
         for (let i = 0; i < len; i++) {
-            const normalizedValue = (array[i] - 128) / 128 // Normalize between -1 and 1
-            sumOfSquares += normalizedValue * normalizedValue
+            const sample = this.volumeBuffer[i]
+            sumSquare += sample * sample
         }
 
-        const rms = Math.sqrt(sumOfSquares / len)
-
-        // map RMS to dB scale & protect against log(0)
-        const dB = 20 * Math.log10(rms || 0.0001)
-
-        return { dB: { value: dB } }
+        const rms = Math.sqrt(sumSquare / len)
+        return rms > 0.000001 ? Math.max(MIN_DB, Math.min(0, 20 * Math.log10(rms))) : MIN_DB
     }
 
-    static getSource(id: string): AudioNode | null {
-        return this.sources[id] || null
+    static releaseAnalyser(path?: string) {
+        if (!path) return
+        AudioInputCapture.getInstance().removeInput(path)
     }
 
-    static getAnalysers() {
-        return this.analysers
-    }
+    static getAnalysers(path?: string) {
+        let nodeId = "speaker_default"
 
-    // Refresh all audio connections through equalizer (called when equalizer is re-initialized)
-    static async refreshEqualizerConnections() {
-        console.log("Refreshing all audio connections through new equalizer instance")
-
-        // Get all current source IDs
-        const sourceIds = Object.keys(this.sources)
-
-        if (sourceIds.length === 0) {
-            console.log("No audio sources to refresh")
-            return
+        if (path) {
+            nodeId = path
+            const source = this.gainNodes[path] || this.sources[path]
+            if (source) AudioInputCapture.getInstance().captureInput(path, source)
         }
 
-        // For each source, seamlessly switch to new equalizer without audio interruption
-        for (const id of sourceIds) {
-            const source = this.sources[id]
-            if (source) {
-                try {
-                    // Get the old equalizer output node before disconnecting
-                    const oldConnection = getConnectedSourceOutput(id)
-
-                    // Disconnect from old equalizer (but keep analysis connections alive)
-                    disconnectAudioSourceFromEqualizer(id)
-
-                    // Immediately connect to new equalizer to minimize audio gap
-                    const newEqOutputNode = await connectAudioSourceToEqualizer(id, source)
-
-                    if (newEqOutputNode) {
-                        // Disconnect old analysis connections if they exist
-                        if (oldConnection && this.splitter) {
-                            try {
-                                oldConnection.disconnect(this.splitter)
-                                this.disconnectGain(oldConnection)
-                                this.disconnectDestination(oldConnection)
-                            } catch (err) {
-                                // Old connections might not exist, that's fine
-                            }
-                        }
-
-                        // Connect new equalizer output to analysis chain
-                        if (this.splitter) {
-                            const processor = this.processors[id]
-                            const outputNode = processor || newEqOutputNode
-
-                            if (processor) {
-                                newEqOutputNode.connect(processor.input)
-                            }
-
-                            this.connectToSinks(outputNode)
-                        }
-
-                        console.log(`Seamlessly switched equalizer connection for audio source: ${id}`)
-                    }
-                } catch (err) {
-                    console.error(`Failed to refresh equalizer connection for ${id}:`, err)
-                }
-            }
-        }
+        return AudioInputCapture.getInstance().getAnalysers(nodeId)
     }
 }

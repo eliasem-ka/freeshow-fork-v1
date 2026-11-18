@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte"
     import type { MediaStyle } from "../../../../types/Main"
-    import { activeEdit, activePopup, activeShow, alertMessage, editMode, focusMode, media, outputs, overlays, refreshEditSlide, resized, showsCache, slideNotesActive, special, styles } from "../../../stores"
+    import { activeEdit, activePopup, activeShow, alertMessage, editMode, focusMode, media, outputs, overlays, playerVideos, resized, showsCache, slideNotesActive, special, styles } from "../../../stores"
     import { transposeText } from "../../../utils/chordTranspose"
     import { DEFAULT_WIDTH } from "../../../utils/common"
     import { translateText } from "../../../utils/language"
@@ -13,7 +13,7 @@
     import { history } from "../../helpers/history"
     import { getExtension, getMedia, getMediaFileFromClipboard, getMediaLayerType, getMediaStyle, getMediaType, getThumbnailPath, mediaSize } from "../../helpers/media"
     import { getFirstActiveOutput, getResolution, getSlideFilter } from "../../helpers/output"
-    import { getLayoutRef } from "../../helpers/show"
+    import { getLayoutRef, isSlideLocked } from "../../helpers/show"
     import { _show } from "../../helpers/shows"
     import { getStyles } from "../../helpers/style"
     import FloatingInputs from "../../input/FloatingInputs.svelte"
@@ -32,7 +32,7 @@
     import Timeline from "../../timeline/Timeline.svelte"
     import EditHeader from "../EditHeader.svelte"
     import Editbox from "../editbox/Editbox.svelte"
-    import { getUsedChords } from "../scripts/chords"
+    import { getShowChords, getUsedChords } from "../scripts/chords"
     import { addItem } from "../scripts/itemHelpers"
     import { setCaretAtEnd } from "../scripts/textStyle"
     import { centerZoom } from "../scripts/zoom"
@@ -47,6 +47,12 @@
     let mouse: any = null
     let newStyles: { [key: string]: string | number } = {}
     $: active = $activeEdit.items
+
+    let lastActiveIds = ""
+    $: if (active.join(",") !== lastActiveIds) {
+        newStyles = {}
+        lastActiveIds = active.join(",")
+    }
 
     let width = 0
     let height = 0
@@ -74,7 +80,7 @@
         })
     }
 
-    $: background = bgId && currentShowId ? currentShow?.media[bgId] : Slide?.settings?.backgroundImage ? { path: Slide.settings.backgroundImage, type: getMediaType(getExtension(Slide.settings.backgroundImage)), id: "" } : null
+    $: background = bgId && currentShowId ? currentShow?.media[bgId] : Slide?.settings?.backgroundImage ? { path: Slide.settings.backgroundImage, type: $playerVideos[Slide.settings.backgroundImage] ? "player" : getMediaType(getExtension(Slide.settings.backgroundImage)), id: "" } : null
     $: backgroundPath = background?.path || ""
     // $: slideOverlays = layoutSlide.overlays || []
 
@@ -88,6 +94,15 @@
     async function loadBackground() {
         mediaPath = bgPath
         thumbnailPath = getThumbnailPath(mediaPath, mediaSize.slideSize)
+
+        if (background?.type === "player" || $playerVideos[bgPath]) {
+            const playerVid = $playerVideos[bgPath] || (background as any)?.data || background
+            if (playerVid?.id) {
+                if (playerVid.type === "youtube") thumbnailPath = `https://i.ytimg.com/vi/${playerVid.id}/sddefault.jpg`
+                else if (playerVid.type === "vimeo") thumbnailPath = `https://vumbnail.com/${playerVid.id}_medium.jpg`
+                return
+            }
+        }
 
         const media = await getMedia(bgPath, mediaSize.slideSize)
         if (!media) return
@@ -108,7 +123,6 @@
         else newStyles = {}
     }
 
-    let updateTimeout: NodeJS.Timeout | null = null
     function updateStyles() {
         if (!Object.keys(newStyles).length) return
 
@@ -124,7 +138,9 @@
                 let styles = getStyles(item.style)
                 let textStyles = ""
 
-                Object.entries(newStyles).forEach(([key, value]) => (styles[key] = value.toString()))
+                const itemNewStyles = (newStyles as any).__multiPositions ? (newStyles as any).__multiPositions[id] || {} : newStyles
+
+                Object.entries(itemNewStyles).forEach(([key, value]) => (styles[key] = (value as any).toString()))
                 Object.entries(styles).forEach((obj) => (textStyles += obj[0] + ":" + obj[1] + ";"))
 
                 values.push(textStyles)
@@ -143,22 +159,6 @@
             newData: { style: { key: "style", values } },
             location: { page: "edit", show: historyShow, slide: slideId, items: activeItems }
         })
-
-        if (!items[0]?.auto) return
-        // recalculate auto size
-        if (updateTimeout) clearTimeout(updateTimeout)
-        updateTimeout = setTimeout(resetAutoSize, 3000)
-
-        function resetAutoSize() {
-            showsCache.update((a) => {
-                if (!a[currentShowId]?.slides?.[slideId]?.items?.[activeItems[0] || 0]?.autoFontSize) return a
-
-                delete a[currentShowId].slides[slideId].items[activeItems[0] || 0].autoFontSize
-                return a
-            })
-
-            refreshEditSlide.set(true)
-        }
     }
 
     let altTimeout: NodeJS.Timeout | null = null
@@ -209,10 +209,8 @@
     // CHORDS
     let usedChords: string[] = []
     $: slideChords = Slide ? getUsedChords(Slide) : []
-    $: allChords = Object.values(currentShow?.slides || {})
-        .map(getUsedChords)
-        .flat()
-    // combine and remove duplicates
+    $: allChords = getShowChords(currentShow)
+    // combine and remove duplicates (current slide chords first, then all other show chords, both sorted alphabetically)
     $: usedChords = slideChords.length + allChords.length ? [...new Set([...slideChords, ...allChords])] : []
 
     let chordsAction = ""
@@ -253,7 +251,7 @@
     )
 
     let profile = getAccess("shows")
-    $: isGroupLocked = !!Slide?.locked // WIP get group slide
+    $: isGroupLocked = isSlideLocked(currentShowId, ref[$activeEdit.slide ?? -1]?.id || "", $showsCache)
     $: isLocked = currentShow?.locked || isGroupLocked || profile.global === "read" || profile[currentShow?.category || ""] === "read"
 
     // remove overflow if scrollbars are flickering over 25 times per second
@@ -290,15 +288,28 @@
 
     // BACKGROUND
 
-    $: currentBackgroundPath = currentShow?.media?.[ref[$activeEdit.slide || 0]?.data.background || ""]?.path || ""
+    $: currentBackgroundPath = currentShow?.media?.[ref[$activeEdit.slide ?? -1]?.data.background || ""]?.path || ""
     $: hasBackground = !!currentBackgroundPath
     function convertBackgroundToMedia() {
         // add behind all other items
         addItem("media", null, { src: currentBackgroundPath }, "", { left: "0px", top: "0px", width: "1920px", height: "1080px" }, 0)
 
         showsCache.update((a) => {
-            if (!a[currentShowId]?.layouts?.[currentShow?.settings?.activeLayout || ""]?.slides?.[$activeEdit.slide || 0]?.background) return a
-            delete a[currentShowId].layouts[currentShow?.settings?.activeLayout || ""].slides[$activeEdit.slide || 0].background
+            const currentRef = ref[$activeEdit.slide ?? -1]
+            if (!currentRef) return a
+
+            const layoutId = currentShow?.settings?.activeLayout || ""
+            const layoutSlides = a[currentShowId]?.layouts?.[layoutId]?.slides
+            if (!layoutSlides) return a
+
+            if (currentRef.type === "child" && currentRef.parent) {
+                const parentSlide = layoutSlides[currentRef.parent.index]
+                if (parentSlide?.children?.[currentRef.id]?.background) {
+                    delete parentSlide.children[currentRef.id].background
+                }
+            } else if (layoutSlides[currentRef.index]?.background) {
+                delete layoutSlides[currentRef.index].background
+            }
             return a
         })
     }
@@ -340,7 +351,7 @@
                             {#each layoutSlide.overlays as id}
                                 {#if $overlays[id]}
                                     {#each $overlays[id]?.items || [] as item}
-                                        <Textbox {item} ref={{ type: "overlay", id }} />
+                                        <Textbox {item} ref={{ type: "overlay", id }} preview centerPreview />
                                     {/each}
                                 {/if}
                             {/each}
@@ -386,7 +397,7 @@
     {/if}
 
     {#if !$focusMode && !isLocked && !$slideNotesActive && !$special.slideTimelineActive}
-        <FloatingInputs side="left" bottom={notesVisible ? bottomHeight : 10} onlyOne={hasBackground}>
+        <FloatingInputs side="left" bottom={notesVisible ? bottomHeight : 10} onlyOne={$editMode !== "chords" && hasBackground}>
             {#if $editMode === "chords"}
                 <MaterialButton on:click={transposeUp} title="edit.transpose_up">
                     <Icon id="arrow_up" size={1.3} white />
@@ -407,7 +418,8 @@
                     </MaterialButton>
                 {/each}
             {:else if hasBackground}
-                <MaterialButton icon="autofill" on:click={convertBackgroundToMedia}>
+                <MaterialButton on:click={convertBackgroundToMedia}>
+                    <Icon id="autofill" gradient />
                     <T id="edit.convert_to_media_item" />
                 </MaterialButton>
             {/if}

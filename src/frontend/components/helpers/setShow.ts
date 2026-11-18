@@ -20,7 +20,7 @@ export async function setShow(id: string, value: "delete" | Show): Promise<Show>
         if (showRef && value) {
             value.name = showRef.name
             value.category = showRef.category || null
-            value.timestamps = showRef.timestamps || {}
+            value.timestamps = showRef.timestamps || value.timestamps || { created: Date.now(), modified: null, used: null }
             value.quickAccess = showRef.quickAccess || {}
             if (showRef.origin) value.origin = showRef.origin
             if (showRef.private) value.private = true
@@ -266,11 +266,16 @@ export function saveTextCache(id: string, show: Show) {
     }, 1000)
 }
 function getTextCacheString(show: Show) {
+    const getLineText = (line: any) => {
+        const text = line?.text
+        if (Array.isArray(text)) return text.map((part) => part?.value || "").join("")
+        return ""
+    }
+
     return Object.values(show.slides)
         .flatMap((slide) => slide?.items)
         .flatMap((item) => item?.lines || [])
-        .flatMap((line) => line?.text || [])
-        .map((text) => text?.value || "")
+        .map((line) => getLineText(line))
         .join(" ")
         .toLowerCase()
     // .replace(/[^a-z0-9 ]+/g, "")
@@ -282,7 +287,7 @@ function getTextCacheString(show: Show) {
     // window.atob(encode)
 }
 
-export function setQuickAccessMetadata(show: ShowObj, key: string, value: string) {
+export function setQuickAccessMetadata(show: Show | ShowObj, key: string, value: string) {
     if (!value) return show
 
     if (!show.quickAccess) show.quickAccess = {}

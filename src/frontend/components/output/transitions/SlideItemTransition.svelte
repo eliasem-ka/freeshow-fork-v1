@@ -1,25 +1,44 @@
 <script lang="ts">
     import { uid } from "uid"
     import type { Item, Transition } from "../../../../types/Show"
-    import { currentWindow, scriptureSettings, templates } from "../../../stores"
+    import { currentWindow } from "../../../stores"
     import { clone } from "../../helpers/array"
-    import { getStyleTemplate, slideHasAutoSizeItem } from "../../helpers/output"
     import OutputTransition from "./OutputTransition.svelte"
     // import { onMount } from "svelte"
 
     export let globalTransition: Transition
     export let transitionEnabled = false
     export let transitioningBetween = false
+    export let isClearing = false
+    // outgoing items hold for auto size delay while incoming content calculates font size
+    export let incomingNeedsAutoSize = true
     export let preview = false
     export let item: Item
     export let currentSlide: any = {}
     export let outSlide: any = {}
     export let lines: any[] = []
-    export let currentStyle: any = {}
 
     let currentlyTransitioning: { [key: string]: any } = {}
 
     $: if (item !== undefined || lines) startTransition()
+
+    // update out transition if cleared without incoming content or transition changed
+    $: clearingOutTransition = getClearingOutTransition(globalTransition, item)
+    function getClearingOutTransition(global: Transition, currentItem: Item): Transition {
+        const transition = currentItem?.actions?.transition || global || ({} as Transition)
+        const out = clone(transition.out || transition) as Transition
+
+        if (out.type === "none") out.duration = 0
+
+        // keep custom "hide" delay, without auto size delay
+        const hideDuration = $currentWindow === "output" || preview ? currentItem?.actions?.hideTimer || 0 : 0
+        out.delay = hideDuration ? hideDuration * 1000 : 0
+
+        // delay won't work if no transition
+        if (out.delay && (out.type === "none" || !out.duration)) return { ...out, type: "fade", duration: 1 }
+
+        return out
+    }
 
     // WIP item wait out time will not clear other items without wait time if between transition
     // WIP slide direction from top to bottom is a bit buggy
@@ -30,7 +49,13 @@
         const lastStateId = Object.keys(currentlyTransitioning).pop()
         if (lastStateId) {
             const lastState = currentlyTransitioning[lastStateId]
-            if (JSON.stringify(lastState.item) === JSON.stringify(item) && JSON.stringify(lastState.lines) === JSON.stringify(lines) && JSON.stringify(lastState.outSlide) === JSON.stringify(outSlide) && JSON.stringify(lastState.currentSlide) === JSON.stringify(currentSlide)) {
+            const { autoFontSize: _oldAuto, ...oldItem } = lastState.item || {}
+            const { autoFontSize: _newAuto, ...newItem } = item || {}
+            if (JSON.stringify(oldItem) === JSON.stringify(newItem) && JSON.stringify(lastState.lines) === JSON.stringify(lines) && JSON.stringify(lastState.outSlide) === JSON.stringify(outSlide) && JSON.stringify(lastState.currentSlide) === JSON.stringify(currentSlide)) {
+                if (item?.autoFontSize !== lastState.item?.autoFontSize) {
+                    lastState.item = clone(item)
+                    if (currentOut[lastStateId]) currentOut[lastStateId].item = clone(item)
+                }
                 return
             }
         }
@@ -51,6 +76,7 @@
 
         let inDelay = 0
         let outDelay = 0
+        let autoSizeDelay = 0
 
         // ITEM IN/OUT DELAY
         let showDuration = $currentWindow === "output" || preview ? item?.actions?.showTimer || 0 : 0
@@ -60,20 +86,21 @@
 
         // EXTRA DELAY
 
-        // auto size delay
-        if (!outDelay) {
-            let customTemplate = getStyleTemplate(outSlide, currentStyle)
-            if (!Object.keys(customTemplate).length && outSlide?.id === "temp") customTemplate = $templates[$scriptureSettings.template] || {}
+        // this is hopefully not needed anymore
+        // // auto size delay
+        // if (!outDelay) {
+        //     let customTemplate = getStyleTemplate(outSlide, currentStyle)
+        //     if (!Object.keys(customTemplate).length && outSlide?.id === "temp") customTemplate = $templates[$scriptureSettings.template] || {}
 
-            // only keep the legacy autosize delay when nothing has pre-populated a font size yet
-            const templateNeedsAutoSize = Object.keys(customTemplate).length ? slideHasAutoSizeItem(customTemplate) : false
-            const itemNeedsAutoSize = item.auto && !item.autoFontSize
+        //     // only keep the legacy autosize delay when nothing has pre-populated a font size yet
+        //     const templateNeedsAutoSize = slideHasAutoSizeItem(customTemplate)
 
-            if (templateNeedsAutoSize || itemNeedsAutoSize) {
-                outDelay = 500
-                if (!inDelay) inDelay = outDelay * 0.98
-            }
-        }
+        //     if (templateNeedsAutoSize || itemNeedsAutoSize(item)) {
+        //         autoSizeDelay = 500
+        //         outDelay = autoSizeDelay
+        //         if (!inDelay) inDelay = outDelay * 0.98
+        //     }
+        // }
 
         // add some time in case an identical item is "fading" in
         if (!outDelay && itemTransition?.duration === 0 && item.type === "media") outDelay = 250
@@ -96,7 +123,7 @@
 
         // SET
 
-        let stateId = uid(5)
+        let stateId = `state_${uid(5)}`
         let state = {
             item: clone(item),
             lines: clone(lines),
@@ -104,11 +131,20 @@
             currentSlide: clone(currentSlide),
             inTransition,
             outTransition,
-            transitionBetween
+            transitionBetween,
+            autoSizeDelay
         }
 
-        currentlyTransitioning[stateId] = state
-        currentlyTransitioning = currentlyTransitioning
+        // Keep only the active state so previous states un-render and trigger their out transition
+        currentlyTransitioning = { [stateId]: state }
+    }
+
+    function getOutTransition(transitioning: any, incomingNeedsAutoSize: boolean, transitioningBetween: boolean): Transition {
+        const transition = transitioningBetween ? transitioning.transitionBetween : transitioning.outTransition
+        if (!incomingNeedsAutoSize && transitioning.autoSizeDelay) {
+            return { ...transition, delay: Math.max(0, (transition.delay || 0) - transitioning.autoSizeDelay) }
+        }
+        return transition
     }
 
     // only update if new ID! Previous is removed, but output should not update until a new value is set
@@ -121,8 +157,15 @@
     }
 </script>
 
-{#each Object.values(currentOut) as transitioning}
-    <OutputTransition inTransition={transitionEnabled ? transitioning.inTransition : null} outTransition={transitionEnabled ? (transitioningBetween ? transitioning.transitionBetween : transitioning.outTransition) : null}>
+{#each Object.entries(currentOut) as [id, transitioning] (id)}
+    {@const outTransition = !transitionEnabled ? null : isClearing ? clearingOutTransition : getOutTransition(transitioning, incomingNeedsAutoSize, transitioningBetween)}
+    <OutputTransition
+        inTransition={transitionEnabled ? transitioning.inTransition : null}
+        {outTransition}
+        on:outrostart={() => {
+            delete currentlyTransitioning[id]
+        }}
+    >
         <slot customItem={transitioning.item} customLines={transitioning.lines} customOut={transitioning.outSlide} customSlide={transitioning.currentSlide} transition={transitionEnabled ? transitioning.inTransition : null} />
     </OutputTransition>
 {/each}

@@ -6,10 +6,12 @@ import { join } from "path"
 import { Server, type Socket } from "socket.io"
 import type { Main, MainSendPayloads } from "../types/IPC/Main"
 import type { Message, ServerData } from "../types/Socket"
+import { getNowPlayingMediaPath } from "./audio/nowPlaying"
 import { CaptureHelper } from "./capture/CaptureHelper"
 import { publishPort, unpublishPorts } from "./data/bonjour"
 import { toApp } from "./index"
 import { OutputHelper } from "./output/OutputHelper"
+import { doesPathExist } from "./utils/files"
 
 type ServerName = "REMOTE" | "STAGE" | "CONTROLLER" | "OUTPUT_STREAM"
 interface ServerValues {
@@ -53,6 +55,13 @@ function createServerInstance(id: ServerName) {
     const app = express()
     const server = http.createServer(app)
 
+    // Serve NowPlaying cover image
+    app.get("/nowplayingcover", (_req, res: Response) => {
+        const filePath = getNowPlayingMediaPath()
+        if (doesPathExist(filePath)) res.sendFile(filePath)
+        else res.status(404).end()
+    })
+
     if (id === "STAGE") {
         // app.get('/show/:showId/:slideId', handleShowSlideHtmlRequest);
         // Serve media files
@@ -81,7 +90,7 @@ function createServerInstance(id: ServerName) {
     // RECEIVE CONNECTION FROM CLIENT
     io.on("connection", (socket) => {
         if (Object.keys(servers[id]!.connections).length >= servers[id]!.max) {
-            io.emit(id, { channel: "ERROR", id: "overLimit", data: servers[id]!.max })
+            socket.emit(id, { channel: "ERROR", data: { key: "overLimit", max: servers[id]!.max } })
             socket.disconnect()
             return
         }
@@ -100,10 +109,12 @@ function registerIpcBridge(id: ServerName) {
     })
 }
 
-let hasStarted = false
-export function startServers({ ports, max, disabled, data }: MainSendPayloads[Main.SERVER_DATA]) {
-    if (hasStarted) closeServers()
-    hasStarted = true
+let isStarting = false
+export async function startServers({ ports, max, disabled, data }: MainSendPayloads[Main.SERVER_DATA]) {
+    if (isStarting) return
+    isStarting = true
+
+    await closeServers()
 
     const serverList = Object.keys(servers) as ServerName[]
     serverList.forEach((id: ServerName) => {
@@ -130,6 +141,8 @@ export function startServers({ ports, max, disabled, data }: MainSendPayloads[Ma
             publishPort(id, servers[id]!.port)
         }
     })
+
+    isStarting = false
 }
 
 export function updateServerData(data: { [key: string]: ServerData }) {
@@ -146,15 +159,20 @@ export function getServerData(id: ServerName) {
 export function closeServers() {
     unpublishPorts()
 
-    hasStarted = false
     const serverList = Object.keys(servers) as ServerName[]
-    serverList.forEach((id: ServerName) => {
-        if (!servers[id]?.server) return
-        // close socket.io (disconnects clients and closes the underlying http server)
-        servers[id]!.io.close()
-        // clear connection state so reconnect counts / max limit don't drift across restarts
-        servers[id]!.connections = {}
-    })
+
+    return Promise.all(
+        serverList.map(
+            (id) =>
+                new Promise<void>((resolve) => {
+                    const entry = servers[id]
+                    if (!entry?.server?.listening) return resolve()
+
+                    entry.connections = {}
+                    entry.io.close(() => resolve())
+                })
+        )
+    )
 }
 
 let responded: { [key: string]: boolean } = {}
@@ -203,17 +221,22 @@ function initialize(id: ServerName, socket: Socket) {
         if (msg.channel === "STREAM_DONE") {
             responded[msg.data.id] = true
         } else if (msg.channel === "OUTPUT_FRAME") {
-            const window = OutputHelper.getOutput(msg.data.outputId)?.window
+            const outputId = msg.data.outputId
+            const window = OutputHelper.getOutput(outputId)?.window
             if (!window || window.isDestroyed()) return
+
+            // the capture worker encodes the thumbnail; only an output it is not capturing is captured here
+            CaptureHelper.Transmitter.requestControllerThumbnail(outputId)
+            if (OutputHelper.Lifecycle.isOffMainActive(outputId)) return
 
             const frame = await CaptureHelper.captureBase64Frame(window)
             if (window.isDestroyed()) return
 
             const bounds = window.getBounds()
             toServer(id, { channel: "OUTPUT_FRAME", data: { frame, width: bounds.width, height: bounds.height } })
-        } else if (msg) {
+        } else if (msg && typeof msg === "object") {
             if (id === "STAGE") updateStageStreamSubscription(socket.id, msg.channel)
-            toApp(id, msg)
+            toApp(id, { ...msg, id: socket.id })
         }
     })
 

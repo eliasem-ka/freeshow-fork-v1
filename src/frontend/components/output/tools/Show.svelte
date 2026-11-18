@@ -1,17 +1,16 @@
 <script lang="ts">
-    import { OUTPUT } from "../../../../types/Channels"
     import type { Output } from "../../../../types/Output"
     import type { LayoutRef } from "../../../../types/Show"
-    import { activeFocus, activeShow, focusMode, outLocked, presentationData, showsCache, slideVideoData } from "../../../stores"
+    import { activeFocus, activeShow, focusMode, outLocked, outputs, playingVideoState, presentationData, showsCache } from "../../../stores"
     import { triggerClickOnEnterSpace } from "../../../utils/clickable"
     import { translateText } from "../../../utils/language"
-    import { send } from "../../../utils/request"
     import Icon from "../../helpers/Icon.svelte"
     import { getFileName, removeExtension } from "../../helpers/media"
     import T from "../../helpers/T.svelte"
-    import { joinTime, secondsToTime } from "../../helpers/time"
+    import { formatUrl, getOutputtedWebsites, sendWebsiteKey, toggleWebsiteMute, triggerWebsiteAction } from "../../helpers/websiteControls"
     import Button from "../../inputs/Button.svelte"
-    import Slider from "../../inputs/Slider.svelte"
+    import { VideoPlayer } from "../../media/video/videoPlayer"
+    import VideoSlider from "../VideoSlider.svelte"
 
     export let currentOutput: Output
     export let ref: LayoutRef[] | { temp: boolean; items: any; id: string }[] | undefined
@@ -41,15 +40,35 @@
     $: currentIndex = slide?.type === "ppt" ? $presentationData.stat?.position : (slide?.page || slide?.index || 0) + 1
     $: totalLength = slide?.type === "ppt" ? $presentationData.stat?.slides : slide?.pages || length
 
-    // {ref.showId}_{ref.slideId}
-    $: videoId = `${slide?.id}_${ref?.[slide?.index || 0]?.id}`
+    $: itemVideos = Object.entries($playingVideoState).filter(([_, data]) => data.type === "item")
 
-    function playPause(path: string, play: boolean) {
-        send(OUTPUT, ["SLIDE_VIDEO_STATE"], { slideId: videoId, path, action: play ? "play" : "pause" })
+    function playPause(path: string, outputId: string, isPaused: boolean) {
+        if (isPaused) VideoPlayer.play(path, outputId)
+        else VideoPlayer.pause(path, outputId)
     }
-    function toggleLoop(path: string, looping: boolean) {
-        const action = looping ? "unloop" : "loop"
-        send(OUTPUT, ["SLIDE_VIDEO_STATE"], { slideId: videoId, path, action })
+    function toggleLoop(path: string, outputId: string) {
+        VideoPlayer.toggleLoop(path, outputId)
+    }
+
+    let mutedWebsites: { [src: string]: boolean } = {}
+    function toggleMute(src: string) {
+        const isMuted = !mutedWebsites[src]
+        mutedWebsites[src] = isMuted
+        toggleWebsiteMute(src, isMuted)
+    }
+
+    // Website controls
+    $: websites = getOutputtedWebsites($outputs)
+    function handleWebsiteKeydown(e: KeyboardEvent, websiteSrc: string) {
+        if (e.key === "ArrowLeft") {
+            e.preventDefault()
+            e.stopPropagation()
+            sendWebsiteKey(websiteSrc, "Left")
+        } else if (e.key === "ArrowRight") {
+            e.preventDefault()
+            e.stopPropagation()
+            sendWebsiteKey(websiteSrc, "Right")
+        }
     }
 </script>
 
@@ -72,57 +91,55 @@
         {/if}
     </span>
 
-    {#if $slideVideoData[videoId]}
-        {#each Object.entries($slideVideoData[videoId]) as [path, data]}
+    {#if itemVideos.length}
+        {#each itemVideos as [key, data]}
+            {@const sepIndex = key.lastIndexOf("_")}
+            {@const path = sepIndex !== -1 ? key.slice(0, sepIndex) : key}
+            {@const outputId = sepIndex !== -1 ? key.slice(sepIndex + 1) : ""}
             <div class="videoValues">
                 <p>{removeExtension(getFileName(path))}</p>
 
                 <span class="group">
-                    <Button center title={translateText(data.isPaused ? "media.play" : "media.pause")} disabled={$outLocked} on:click={() => playPause(path, data.isPaused)}>
-                        <Icon id={data.isPaused ? "play" : "pause"} white={data.isPaused} />
+                    <Button center title={translateText(data.paused ? "media.play" : "media.pause")} disabled={$outLocked} on:click={() => playPause(path, outputId, data.paused)}>
+                        <Icon id={data.paused ? "play" : "pause"} white={data.paused} />
                     </Button>
 
-                    <div class="mainSlider">
-                        <span style="color: var(--secondary)">
-                            {joinTime(secondsToTime(Math.floor(data.currentTime)))}
-                        </span>
+                    <VideoSlider {outputId} {path} disabled={$outLocked} videoData={{ duration: data.duration, paused: data.paused, loop: data.loop }} videoTime={data.currentTime} />
 
-                        <div class="slider">
-                            <!-- WIP change time -->
-                            <Slider disabled value={data.currentTime} step={1} max={data.duration} />
-                            <!-- on:mousedown={() => {
-                            if (!videoData.paused) pauseAtMove()
-                        }}
-                        on:mousemove={move}
-                        on:change={sendToOutput}
-                        on:input={sliderInput} -->
-                        </div>
-
-                        <span style="color: var(--secondary)">
-                            {joinTime(secondsToTime((data.duration || 0) - Math.floor(data.currentTime)))}
-                        </span>
-                    </div>
-
-                    <!-- WIP change loop/mute state -->
-                    <!-- NOTE: mute state can be changed in the media item edit currently -->
-                    <Button center title={translateText("media._loop" + (data.loop ? ": settings.enabled" : ""))} on:click={() => toggleLoop(path, !!data.loop)}>
+                    <Button center title={translateText("media._loop" + (data.loop ? ": settings.enabled" : ""))} on:click={() => toggleLoop(path, outputId)}>
                         <Icon id="loop" white={!data.loop} />
                     </Button>
-                    <!-- <Button
-                        center
-                        title={data.muted === false ? $dictionary.actions?.mute : $dictionary.actions?.unmute}
-                        disabled={$outLocked}
-                        on:click={() => {
-                            console.log("set mute")
-                        }}
-                    >
+                    <Button center title={translateText(data.muted === false ? "actions.mute" : "actions.unmute")} disabled={$outLocked} on:click={() => VideoPlayer.toggleMute(path, outputId)}>
                         <Icon id={data.muted === false ? "volume" : "muted"} white={data.muted !== false} />
-                    </Button> -->
+                    </Button>
                 </span>
             </div>
         {/each}
     {/if}
 {/if}
+
+{#each websites as website}
+    <div class="videoValues websiteValues" tabindex="0" role="button" on:keydown={(e) => handleWebsiteKeydown(e, website.src)}>
+        <p title={website.src}>{formatUrl(website.src)}</p>
+
+        <span class="group">
+            <Button center title={translateText("media.previous")} disabled={$outLocked} on:click={() => sendWebsiteKey(website.src, "Left")}>
+                <Icon id="previous" white />
+            </Button>
+            <Button center title={translateText("media.next")} disabled={$outLocked} on:click={() => sendWebsiteKey(website.src, "Right")}>
+                <Icon id="next" white />
+            </Button>
+
+            <Button center title={translateText("preview.reload")} disabled={$outLocked} on:click={() => triggerWebsiteAction({ src: website.src, type: "reload" })}>
+                <Icon id="refresh" white />
+            </Button>
+
+            <Button center title={translateText(mutedWebsites[website.src] ? "actions.unmute" : "actions.mute")} disabled={$outLocked} on:click={() => toggleMute(website.src)}>
+                <Icon id={mutedWebsites[website.src] ? "muted" : "volume"} white={mutedWebsites[website.src]} />
+            </Button>
+        </span>
+    </div>
+{/each}
 
 <style>
     .name {
@@ -147,6 +164,15 @@
         border-top: 2px solid var(--primary-lighter);
     }
 
+    .websiteValues {
+        outline: none;
+    }
+    .websiteValues:focus,
+    .websiteValues:focus-within {
+        outline: 2px solid var(--secondary);
+        outline-offset: -2px;
+    }
+
     .videoValues p {
         /* text-align: center; */
         font-size: 0.8em;
@@ -162,21 +188,5 @@
     }
     .group :global(button) {
         padding: 0.3em !important;
-    }
-
-    .mainSlider {
-        display: flex;
-        flex: 1;
-        align-items: center;
-        margin: 0 5px;
-        font-size: 0.8em;
-    }
-
-    .slider {
-        flex: 1;
-        margin: 0 5px;
-        height: 100%;
-        display: flex;
-        align-items: center;
     }
 </style>

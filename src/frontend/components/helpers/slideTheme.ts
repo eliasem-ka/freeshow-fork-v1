@@ -69,23 +69,51 @@ export function loadSlideThemeItems(selection: SlideSelection): (ContextMenuItem
     return items
 }
 
-/** Set (or remove, with REMOVE_SLIDE_THEME) the template on the selected slides, as one undo step. */
-export function applySlideTheme(templateId: string, selection: SlideSelection) {
+/** Active show, or null (with an alert) when it is locked or read-only for this profile. */
+function getEditableShow() {
     const showId = get(activeShow)?.id
     const show = _show().get()
-    if (!showId || !show) return
+    if (!showId || !show) return null
 
     if (show.locked) {
         alertMessage.set("show.locked")
         activePopup.set("alert")
-        return
+        return null
     }
     const profile = getAccess("shows")
     if (profile.global === "read" || profile[show.category || ""] === "read") {
         alertMessage.set("profile.locked")
         activePopup.set("alert")
-        return
+        return null
     }
+
+    return { showId, show }
+}
+
+/** Apply a template to the whole active show (same as clicking it in the Templates drawer). */
+export function applyShowTheme(templateId: string) {
+    const editable = getEditableShow()
+    if (!editable || !get(templates)[templateId]) return
+
+    history({ id: "TEMPLATE", newData: { id: templateId, data: { createItems: true } }, location: { page: "none", override: "show#" + editable.showId } })
+}
+
+/** Template ids currently in use by the active show: its global template, or the one shared by the given slides. */
+export function getActiveThemeId(selection: SlideSelection | null) {
+    const show = _show().get()
+    if (!show) return ""
+    if (!selection?.length) return show.settings?.template || ""
+
+    const slides: { [key: string]: Slide } = show.slides || {}
+    const themes = getSelectedSlideIds(selection).map((id) => slides[id]?.settings?.template || "")
+    return themes.length && themes.every((t) => t === themes[0]) ? themes[0] : ""
+}
+
+/** Set (or remove, with REMOVE_SLIDE_THEME) the template on the selected slides, as one undo step. */
+export function applySlideTheme(templateId: string, selection: SlideSelection) {
+    const editable = getEditableShow()
+    if (!editable) return
+    const { show } = editable
 
     const removing = templateId === REMOVE_SLIDE_THEME
     if (!removing && !get(templates)[templateId]) return

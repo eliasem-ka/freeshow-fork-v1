@@ -109,6 +109,7 @@ import { getItemText, getSelectionRange } from "../edit/scripts/textStyle"
 import { clone, removeDuplicates, sortObjectNumbers } from "../helpers/array"
 import { copy, cut, deleteAction, duplicate, paste, selectAll } from "../helpers/clipboard"
 import { history, redo, undo } from "../helpers/history"
+import { applySlideTheme } from "../helpers/slideTheme"
 import { getExtension, getFileName, getMediaLayerType, getMediaStyle, getMediaType, removeExtension, splitPath } from "../helpers/media"
 import { defaultOutput, getCurrentStyle, getFirstActiveOutput, isOutputBound, resolveOutputId, setOutput, toggleOutput, toggleOutputs, updateActiveSceneOutputs } from "../helpers/output"
 import { select } from "../helpers/select"
@@ -1476,6 +1477,7 @@ const clickActions = {
     },
 
     // change slide group
+    slide_theme: (obj: ObjData) => applySlideTheme(obj.menu.id || "", obj.sel?.data || []), // fork
     slide_groups: (obj: ObjData) => changeSlideGroups({ sel: { data: obj.sel?.data || [] }, menu: { id: obj.menu.id! } }),
 
     actions: (obj: ObjData) => changeSlideAction(obj, obj.menu.id || ""),

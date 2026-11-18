@@ -1588,6 +1588,14 @@
         "delete_confirmation": "¿Eliminar todos los eventos de este calendario?"
     },
     "scripture": {
+        "picker": "Selector grande (buscar al escribir)",
+        "picker_book": "Libro",
+        "picker_chapter": "Capítulo",
+        "picker_verse": "Versículo",
+        "picker_type_book": "Escribe el libro: se elige en cuanto queda uno solo",
+        "picker_type_chapter": "Escribe el capítulo · Enter o espacio para confirmar",
+        "picker_type_verse": "Escribe el versículo · - para un rango · Enter para mostrar",
+        "picker_type_range": "Escribe el último versículo del rango",
         "collections": "Colecciones",
         "translations": "Traducciones",
         "bibles_section": "Biblias",

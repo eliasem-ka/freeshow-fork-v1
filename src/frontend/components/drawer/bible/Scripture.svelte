@@ -22,6 +22,7 @@
     import TextInput from "../../inputs/TextInput.svelte"
     import Loader from "../../main/Loader.svelte"
     import Center from "../../system/Center.svelte"
+    import ScripturePicker from "./ScripturePicker.svelte"
     import { createScriptureShow, formatBibleText, getShortBibleName, getVerseIdParts, getVersePartLetter, joinRange, loadJsonBible, moveSelection, outputIsScripture, playScripture, sanitizeVerseText, scriptureRangeSelect, sortScriptureSelection, splitText, swapPreviewBible } from "./scripture"
 
     export let active: string | null
@@ -1041,6 +1042,55 @@
         const offsets = $scriptures[activeScriptureId]?.collection?.offsets || {}
         return offsets[offsetId] || 0
     }
+    /// PICKER (fork: Holyrics-style tiles + type to find, see ScripturePicker.svelte) ///
+
+    // picks run one after another, and the picker is told when each one has loaded
+    let pickerSettled = 0
+    let pickerChain: Promise<any> = Promise.resolve()
+    function pickerNavigate(action: () => Promise<any>) {
+        pickerChain = pickerChain
+            .then(action)
+            .catch((err) => console.error(err))
+            .then(() => pickerSettled++)
+    }
+    async function pickerOpenBook(id: string) {
+        const opened = openBook(id)
+        // the chapter list is enough to go on typing, chapter 1 may still be loading (online Bibles)
+        const hasChapters = new Promise<void>((resolve) => {
+            const started = Date.now()
+            const check = setInterval(() => {
+                const ready = activeReference.book?.toString() === id && !!data[previewBibleId]?.bookData
+                if (!ready && Date.now() - started < 15000) return
+                clearInterval(check)
+                resolve()
+            }, 30)
+        })
+        await Promise.race([opened, hasChapters])
+    }
+    function pickerVerses(numbers: number[]) {
+        pickerChain.then(() => {
+            // one verse goes as a plain number (its first part is picked when it is split), a range as every part
+            const ids = numbers.length > 1 ? splittedVerses.filter((a) => numbers.includes(Number(a.number))).map((a) => a.id) : numbers
+            openVerse([ids])
+            if (isActiveInOutput) setTimeout(playScripture)
+        })
+    }
+    function pickerVerseClick(e: MouseEvent, id: string, isClick: boolean) {
+        openVerse(updateVersesSelection(e, id, isClick))
+        if (isClick && isActiveInOutput && !e.ctrlKey && !e.metaKey) playScripture()
+    }
+    $: pickerPreview = $scriptureMode === "picker" ? getPickerPreview(splittedVerses, activeReference) : ""
+    function getPickerPreview(..._updaters: any[]) {
+        const picked = (activeReference.verses[activeReference.verses.length - 1] || []).map((a) => a.toString())
+        return splittedVerses
+            .filter((a) => picked.includes(a.id) || picked.includes(getVerseIdParts(a.id).id.toString()))
+            .map((a) => formatBibleText(a.text, true))
+            .join(" ")
+    }
+    const scriptureModes = ["picker", "list", "grid"] as const
+    function nextScriptureMode() {
+        scriptureMode.set(scriptureModes[(scriptureModes.indexOf($scriptureMode) + 1) % scriptureModes.length])
+    }
 </script>
 
 <svelte:window on:keydown={keydown} on:mouseup={mouseup} />
@@ -1095,6 +1145,25 @@
                     <T id="empty.general" />
                 </Center>
             {/if}
+        {:else if $scriptureMode === "picker"}
+            <ScripturePicker
+                {books}
+                {booksData}
+                customNames={$customScriptureBooks[previewBibleId]}
+                {chapters}
+                verses={splittedVerses}
+                activeBook={activeReference.book}
+                activeChapters={activeReference.chapters}
+                activeVerses={activeReference.verses[activeReference.verses.length - 1] || []}
+                reference="{previewBibleData?.name ? getShortBibleName(previewBibleData.name) + ' · ' : ''}{reference}"
+                previewText={pickerPreview}
+                settled={pickerSettled}
+                on:book={(e) => pickerNavigate(() => pickerOpenBook(e.detail))}
+                on:chapter={(e) => pickerNavigate(() => openChapter([e.detail]))}
+                on:verses={(e) => pickerVerses(e.detail)}
+                on:verseclick={(e) => pickerVerseClick(e.detail.event, e.detail.id, e.detail.isClick)}
+                on:play={() => playScripture()}
+            />
         {:else}
             <!-- LIST/GRID MODE -->
             <div class={$scriptureMode === "grid" ? "grid" : "list"}>
@@ -1218,7 +1287,7 @@
     </div>
 </div>
 
-{#if $scriptureMode !== "grid"}
+{#if $scriptureMode === "list"}
     <FloatingInputs side="left">
         <span class="version" style={isCollection && $scriptureSettings.showAllVersions === false ? "padding-left: 0;" : ""}>
             {#if previewBibleData?.name}
@@ -1283,8 +1352,8 @@
 
         <div class="divider" />
 
-        <MaterialButton disabled={historyOpened} on:click={() => scriptureMode.set($scriptureMode === "list" ? "grid" : "list")} title="show.{[$scriptureMode === 'grid' ? 'grid' : 'list']}">
-            <Icon size={1.3} id={$scriptureMode === "grid" ? "grid" : "list"} white />
+        <MaterialButton disabled={historyOpened} on:click={nextScriptureMode} title={$scriptureMode === "picker" ? "scripture.picker" : "show." + ($scriptureMode === "grid" ? "grid" : "list")}>
+            <Icon size={1.3} id={$scriptureMode === "picker" ? "keyboard" : $scriptureMode === "grid" ? "grid" : "list"} white />
         </MaterialButton>
 
         {#if currentHistory.length}

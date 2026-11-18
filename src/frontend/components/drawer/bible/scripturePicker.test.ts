@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { filterBooks, filterNumbers, getVerseNumbers, normalizeBookText } from "./scripturePicker"
+import { filterBooks, filterNumbers, getVerseNumbers, isStartOfBookName, normalizeBookText } from "./scripturePicker"
 
 const names = ["Génesis", "Éxodo", "Josué", "Jueces", "1 Samuel", "2 Samuel", "Job", "Jeremías", "Joel", "Jonás", "Mateo", "Marcos", "Lucas", "Juan", "Hechos", "Romanos", "1 Corintios", "2 Corintios", "Santiago", "1 Juan", "2 Juan", "3 Juan", "Judas", "Apocalipsis"]
 const books = names.map((name) => ({ name, abbreviation: "" }))
@@ -53,6 +53,35 @@ describe("filterBooks", () => {
     it("returns nothing when no book fits", () => {
         expect(pick("x")).toEqual([])
         expect(pick("j3")).toEqual([])
+    })
+})
+
+// book names as the Reina Valera 1909 has them: the Gospels carry "San"
+describe("filterBooks with titled Gospels", () => {
+    const rv = ["Josué", "Jueces", "Salmos", "San Mateo", "San Marcos", "San Lucas", "San Juan", "Santiago", "1 Juan", "2 Juan", "3 Juan", "Judas"].map((name) => ({ name, abbreviation: "" }))
+    const pickRv = (typed: string) => filterBooks(rv, typed).map((a) => a.name)
+
+    it("finds a Gospel by its name alone", () => {
+        expect(pickRv("jua")).toEqual(["San Juan"])
+        expect(pickRv("mat")).toEqual(["San Mateo"])
+        expect(pickRv("ju")).toEqual(["Jueces", "San Juan", "Judas"])
+    })
+    it("still finds it with the title", () => {
+        expect(pickRv("sanj")).toEqual(["San Juan"])
+        expect(pickRv("san")).toEqual(["San Mateo", "San Marcos", "San Lucas", "San Juan", "Santiago"])
+    })
+    it("does not take the start of a name for a title", () => {
+        expect(pickRv("sant")).toEqual(["Santiago"])
+        expect(pickRv("tiago")).toEqual([])
+    })
+    it("accepts the rest of the name after the book was picked", () => {
+        expect(isStartOfBookName("San Juan", "juan")).toBe(true)
+        expect(isStartOfBookName("San Juan", "sanjua")).toBe(true)
+        expect(isStartOfBookName("1 Corintios", "corin")).toBe(true)
+        expect(isStartOfBookName("San Juan", "juanm")).toBe(false)
+    })
+    it("keeps the letters of John apart from the Gospel", () => {
+        expect(pickRv("1j")).toEqual(["1 Juan"])
     })
 })
 

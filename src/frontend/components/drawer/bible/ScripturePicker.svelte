@@ -9,7 +9,7 @@
     import Icon from "../../helpers/Icon.svelte"
     import T from "../../helpers/T.svelte"
     import Loader from "../../main/Loader.svelte"
-    import { filterBooks, filterNumbers, getVerseNumbers, normalizeBookText, type PickerBook } from "./scripturePicker"
+    import { filterBooks, filterNumbers, getVerseNumbers, isStartOfBookName, type PickerBook } from "./scripturePicker"
 
     export let books: { number: number | string; name: string }[] | null
     export let booksData: { abbreviation?: string; category?: { color?: string } | null }[] = []
@@ -147,7 +147,7 @@
 
         if (!isDigit && step === "chapter" && pickedBook) {
             const tail = pickedBook.tail + char
-            if (normalizeBookText(pickedBook.name).startsWith(normalizeBookText(pickedBook.typed + tail))) {
+            if (isStartOfBookName(pickedBook.name, pickedBook.typed + tail)) {
                 pickedBook.tail = tail
                 return
             }

@@ -18,6 +18,7 @@ export function normalizeBookText(value: string) {
  * 2. the abbreviation starts with it
  * 3. the name without its number starts with it ("ju" reaches "1 Juan" when no other book does)
  * 4. its letters appear in the name in that order, from the first one ("jn" for John / Juan, "1co")
+ * A title before the name ("San Juan") is optional in all of them.
  */
 export function filterBooks<T extends { name: string; abbreviation?: string }>(books: T[], typed: string): T[] {
     const query = normalizeBookText(typed)
@@ -26,10 +27,26 @@ export function filterBooks<T extends { name: string; abbreviation?: string }>(b
     const rules: ((name: string, abbreviation: string) => boolean)[] = [(name) => name.startsWith(query), (_name, abbreviation) => abbreviation.startsWith(query), (name) => name.replace(/^\d+/, "").startsWith(query), (name) => name[0] === query[0] && isSubsequence(query, name)]
 
     for (const rule of rules) {
-        const matches = books.filter((book) => rule(normalizeBookText(book.name), normalizeBookText(book.abbreviation || "")))
+        // a book fits by its name as written or without its title ("San Juan" is found as "juan" and as "san juan")
+        const matches = books.filter((book) => bookNames(book.name).some((name) => rule(name, normalizeBookText(book.abbreviation || ""))))
         if (matches.length) return matches
     }
     return []
+}
+
+/** Spanish Bibles title the Gospels ("San Mateo", "S. Juan", "Santo Evangelio según..."): people type the name, not the title. */
+const BOOK_TITLE = /^(san|santo|santa|s\.)\s+/i
+
+function bookNames(name: string) {
+    const full = normalizeBookText(name)
+    const plain = normalizeBookText((name || "").trim().replace(BOOK_TITLE, ""))
+    return plain && plain !== full ? [plain, full] : [full]
+}
+
+/** True while what was typed is still the start of the book's name, with or without its title or number ("juan" for "San Juan", "cor" for "1 Corintios"). */
+export function isStartOfBookName(name: string, typed: string) {
+    const query = normalizeBookText(typed)
+    return bookNames(name).some((bookName) => bookName.startsWith(query) || bookName.replace(/^\d+/, "").startsWith(query))
 }
 
 function isSubsequence(query: string, text: string) {

@@ -9,6 +9,7 @@
     import Top from "./components/main/Top.svelte"
     import Preview from "./components/output/preview/Preview.svelte"
     import SettingsTabs from "./components/settings/SettingsTabs.svelte"
+    import LibraryPanel from "./components/show/LibraryPanel.svelte"
     import Projects from "./components/show/Projects.svelte"
     import Show from "./components/show/Show.svelte"
     import ShowTools from "./components/show/ShowTools.svelte"
@@ -43,6 +44,10 @@
                     {#key $activeProfile}
                         <Projects />
                     {/key}
+                    <!-- fork: ProPresenter-style library under the playlists -->
+                    {#if !$focusMode}
+                        <LibraryPanel />
+                    {/if}
                 {:else if page === "edit"}
                     <Navigation />
                 {:else if page === "stage"}

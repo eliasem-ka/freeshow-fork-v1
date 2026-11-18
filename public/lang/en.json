@@ -679,6 +679,16 @@
         "custom_action_tip": "Assign a custom action for this show to trigger when this button is clicked."
     },
     "actions": {
+        "theme_new": "New theme",
+        "theme_new_folder": "New folder",
+        "theme_save_slide": "Save slide as theme",
+        "theme_save_slide_tip": "Creates a theme in this folder with the design of the selected slide",
+        "themes_search": "Search themes...",
+        "theme_folder_empty": "No themes here yet",
+        "library": "Library",
+        "library_search": "Search the library...",
+        "library_show": "Show the library",
+        "library_hide": "Hide the library",
         "rename": "Rename",
         "recolor": "Change color",
         "remove": "Remove",
@@ -1590,6 +1600,14 @@
         "delete_confirmation": "Are you sure you want to delete all events from this calendar?"
     },
     "scripture": {
+        "picker": "Large picker (type to find)",
+        "picker_book": "Book",
+        "picker_chapter": "Chapter",
+        "picker_verse": "Verse",
+        "picker_type_book": "Type the book: it is picked as soon as only one is left",
+        "picker_type_chapter": "Type the chapter · Enter or space to confirm",
+        "picker_type_verse": "Type the verse · - for a range · Enter to show",
+        "picker_type_range": "Type the last verse of the range",
         "collections": "Collections",
         "translations": "Translations",
         "bibles_section": "Bibles",

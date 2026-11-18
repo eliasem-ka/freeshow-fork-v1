@@ -2,13 +2,16 @@
 // Kept in its own file so upstream merges only touch the small hooks in contextMenus/loadItems/menuClick.
 
 import { get } from "svelte/store"
-import type { Slide } from "../../../types/Show"
-import { activePopup, activeShow, alertMessage, groups, templateCategories, templates } from "../../stores"
+import { uid } from "uid"
+import type { Slide, Template } from "../../../types/Show"
+import { activePopup, activeRename, activeShow, alertMessage, dictionary, groups, templateCategories, templates } from "../../stores"
 import { newToast } from "../../utils/common"
+import { translateText } from "../../utils/language"
 import { getAccess, isGroupHidden } from "../../utils/profile"
 import type { ContextMenuItem } from "../context/contextMenus"
 import { clone, keysToID, sortByName } from "./array"
 import { history } from "./history"
+import { setDrawerTabData } from "./historyHelpers"
 import { getLayoutRef } from "./show"
 import { _show } from "./shows"
 
@@ -126,11 +129,7 @@ function commitSlides(show: any, newSlides: { [key: string]: Slide }) {
 export const THEME_ROLE_FIRST = "first"
 export const THEME_ROLE_DEFAULT = "default"
 
-const normalize = (s: string) =>
-    s
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[̀-ͯ]/g, "")
+const normalize = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
 // name hints used to guess a mapping when the theme has none stored
 const ROLE_HINTS: { [role: string]: RegExp } = {
     [THEME_ROLE_FIRST]: /titulo|title|portada|primera|first/,
@@ -292,4 +291,57 @@ export function applySlideTheme(templateId: string, selection: SlideSelection) {
     // re-render the slides with their (new) templates, same as dropping a template on a slide
     const showTemplateId: string = show.settings?.template || ""
     history({ id: "TEMPLATE", save: false, newData: { id: showTemplateId }, location: { page: "show" } })
+}
+
+/// CREATING THEMES ///
+
+/** Text with accents, case and spacing ignored, to find themes by name. */
+export function normalizeThemeText(value: string) {
+    return (value || "")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .trim()
+}
+
+/**
+ * New theme (template) in a folder, in rename mode. With selected slides it is ProPresenter's
+ * "save as theme": the design of the first one (its items, and its background if it has one).
+ */
+export function createTheme(categoryId: string, selection: SlideSelection | null) {
+    const data: Template = { name: "", color: null, category: categoryId || null, items: [] }
+
+    const show = _show().get()
+    const layoutSlide = selection?.length && show ? getLayoutRef()[selection[0].index ?? -1] : null
+    const slide: Slide | undefined = layoutSlide ? show.slides?.[layoutSlide.id] : undefined
+    if (slide) {
+        data.items = clone(slide.items || [])
+
+        const parent = show.slides?.[layoutSlide.parent?.id || layoutSlide.id]
+        const group = get(groups)[parent?.globalGroup || ""]
+        const groupName = group ? (group.default ? translateText("groups." + group.name, get(dictionary)) : group.name) : parent?.group || ""
+        data.name = [show.name, groupName].filter(Boolean).join(" - ")
+        data.color = parent?.color || group?.color || null
+
+        if (slide.settings?.color) data.settings = { backgroundColor: slide.settings.color }
+        const backgroundPath = show.media?.[layoutSlide.data?.background || ""]?.path
+        if (backgroundPath) data.settings = { ...(data.settings || {}), backgroundPath }
+    }
+
+    // a new template takes the category that is open in the drawer, so open this one there
+    setDrawerTabData("templates", categoryId && get(templateCategories)[categoryId] ? categoryId : "unlabeled")
+
+    const id = uid()
+    history({ id: "UPDATE", newData: { data }, oldData: { id }, location: { page: "drawer", id: "template" } })
+    // name it right away (an empty new theme then opens in the editor, like a new template does)
+    setTimeout(() => activeRename.set("template_" + id), 50)
+    return id
+}
+
+/** New theme folder (template category). */
+export function createThemeFolder() {
+    const id = uid()
+    const name = translateText("main.unnamed", get(dictionary))
+    history({ id: "UPDATE", newData: { data: { name, icon: "folder" } }, oldData: { id }, location: { page: "drawer", id: "category_templates" } })
+    return id
 }

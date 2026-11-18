@@ -678,6 +678,16 @@
         "custom_action_tip": "Asigna una acción personalizada a esta presentación para que se active cuando se haga clic en este botón"
     },
     "actions": {
+        "theme_new": "Nuevo tema",
+        "theme_new_folder": "Nueva carpeta",
+        "theme_save_slide": "Guardar diapositiva como tema",
+        "theme_save_slide_tip": "Crea un tema en esta carpeta con el diseño de la diapositiva seleccionada",
+        "themes_search": "Buscar temas...",
+        "theme_folder_empty": "Todavía no hay temas aquí",
+        "library": "Biblioteca",
+        "library_search": "Buscar en la biblioteca...",
+        "library_show": "Mostrar la biblioteca",
+        "library_hide": "Ocultar la biblioteca",
         "rename": "Renombrar",
         "recolor": "Cambiar color",
         "remove": "Suprimir",
@@ -1588,6 +1598,14 @@
         "delete_confirmation": "¿Eliminar todos los eventos de este calendario?"
     },
     "scripture": {
+        "picker": "Selector grande (buscar al escribir)",
+        "picker_book": "Libro",
+        "picker_chapter": "Capítulo",
+        "picker_verse": "Versículo",
+        "picker_type_book": "Escribe el libro: se elige en cuanto queda uno solo",
+        "picker_type_chapter": "Escribe el capítulo · Enter o espacio para confirmar",
+        "picker_type_verse": "Escribe el versículo · - para un rango · Enter para mostrar",
+        "picker_type_range": "Escribe el último versículo del rango",
         "collections": "Colecciones",
         "translations": "Traducciones",
         "bibles_section": "Biblias",

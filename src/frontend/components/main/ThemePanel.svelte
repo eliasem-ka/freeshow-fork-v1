@@ -2,16 +2,17 @@
     // Fork feature: ProPresenter-style "Themes" button in the top bar.
     // Opens a floating panel: folders (template categories) -> theme thumbnails.
     // Click a thumbnail to apply it to the selected slides, or to the whole show when none are selected.
-    import { activeDrawerTab, activeEdit, activePage, activeShow, dictionary, groups, labelsDisabled, outputs, selected, showsCache, styles, templateCategories, templates } from "../../stores"
+    import { activeDrawerTab, activeEdit, activePage, activeRename, activeShow, contextActive, dictionary, groups, labelsDisabled, outputs, selected, showsCache, styles, templateCategories, templates } from "../../stores"
     import { translateText } from "../../utils/language"
     import Card from "../drawer/Card.svelte"
     import TemplateSlide from "../drawer/pages/TemplateSlide.svelte"
     import { clone, keysToID, sortByName } from "../helpers/array"
     import Icon from "../helpers/Icon.svelte"
     import { getResolution } from "../helpers/output"
-    import { applyShowTheme, applySlideTheme, applyThemePackage, getActiveThemeId, getThemeMap, getThemeRoles, getThemeTemplates, REMOVE_SLIDE_THEME, setThemeRole, THEME_ROLE_DEFAULT, THEME_ROLE_FIRST } from "../helpers/slideTheme"
+    import { applyShowTheme, applySlideTheme, applyThemePackage, createTheme, createThemeFolder, getActiveThemeId, getThemeMap, getThemeRoles, getThemeTemplates, normalizeThemeText, REMOVE_SLIDE_THEME, setThemeRole, THEME_ROLE_DEFAULT, THEME_ROLE_FIRST } from "../helpers/slideTheme"
     import T from "../helpers/T.svelte"
     import MaterialButton from "../inputs/MaterialButton.svelte"
+    import SelectElem from "../system/SelectElem.svelte"
 
     const UNCATEGORIZED = "__uncategorized__"
 
@@ -22,8 +23,27 @@
 
     $: isShowActive = !!$activeShow?.id && ($activeShow.type || "show") === "show" && !!$showsCache[$activeShow.id]
     $: if (!isShowActive) open = false
+    // naming a new empty theme opens it in the editor: the panel should not stay on top of it
+    let lastPage = $activePage
+    $: if ($activePage !== lastPage) {
+        lastPage = $activePage
+        open = false
+    }
 
     $: slideSelection = $selected.id === "slide" && $selected.data?.length ? ($selected.data as { index?: number }[]) : null
+
+    // a right click on a theme selects it (that is what its menu acts on), which drops the slide selection:
+    // keep it, and give it back once the menu is closed and its action is done
+    let keptSlideSelection: { index?: number }[] | null = null
+    $: if (slideSelection) keptSlideSelection = slideSelection
+    else if ($selected.id !== "template") keptSlideSelection = null
+    $: if (open && !$contextActive && $selected.id === "template" && keptSlideSelection && !$activeRename) restoreSlideSelection()
+    function restoreSlideSelection() {
+        const data = keptSlideSelection
+        setTimeout(() => {
+            if ($selected.id === "template" && data && !$contextActive && !$activeRename) selected.set({ id: "slide", data })
+        }, 150)
+    }
     // re-read when the show or the selection changes
     $: activeThemeId = isShowActive && $showsCache ? getActiveThemeId(slideSelection) : ""
 
@@ -42,19 +62,26 @@
             byCategory[key].push(t)
         })
 
+        // empty folders too: a new theme folder starts without themes
         const folders = sortByName(keysToID(clone(categories)))
-            .filter((c) => byCategory[c.id])
-            .map((c) => ({ id: c.id, name: c.default ? translateText(c.name, $dictionary) : c.name, icon: c.icon || "folder", count: byCategory[c.id].length }))
+            .filter((c) => !c.isArchive)
+            .map((c) => ({ id: c.id, name: c.default ? translateText(c.name, $dictionary) : c.name, icon: c.icon || "folder", count: byCategory[c.id]?.length || 0 }))
         if (byCategory[UNCATEGORIZED]) folders.push({ id: UNCATEGORIZED, name: translateText("category.unlabeled", $dictionary), icon: "folder", count: byCategory[UNCATEGORIZED].length })
 
-        return { byCategory, folders }
+        return { byCategory, folders, list }
     }
+
+    // SEARCH: by name, in every folder
+    let searchValue = ""
+    $: searchQuery = normalizeThemeText(searchValue)
+    $: searchResults = searchQuery ? grouped.list.filter((t) => normalizeThemeText(t.name).includes(searchQuery)) : []
+    $: if (!open) searchValue = ""
 
     // with a single folder there is nothing to choose, go straight to the thumbnails
     $: singleFolder = grouped.folders.length === 1 ? grouped.folders[0].id : null
     $: currentCategory = category ?? singleFolder
     $: currentFolder = grouped.folders.find((f) => f.id === currentCategory)
-    $: themes = currentCategory ? grouped.byCategory[currentCategory] || [] : []
+    $: themes = searchQuery ? searchResults : currentCategory ? grouped.byCategory[currentCategory] || [] : []
     $: if (currentCategory !== undefined) mapping = false
 
     // THEME PACKAGES: a real category is a theme, each template a "theme slide"
@@ -90,8 +117,53 @@
             return
         }
 
-        if (slideSelection) applySlideTheme(templateId, slideSelection)
-        else applyShowTheme(templateId)
+        if (slideSelection) {
+            const slides = slideSelection
+            applySlideTheme(templateId, slides)
+            // applying drops the selection: keep it, to go on trying themes on the same slides
+            setTimeout(() => !$selected.id && selected.set({ id: "slide", data: slides }), 50)
+        } else applyShowTheme(templateId)
+    }
+
+    // CREATE
+
+    function newTheme(fromSlide = false) {
+        if (!currentCategory) return
+        editMode = mapping = false
+        searchValue = ""
+        const slides = slideSelection
+        createTheme(currentCategory === UNCATEGORIZED ? "" : currentCategory, fromSlide ? slides : null)
+        // creating selects nothing: keep the slides selected, the new theme is probably meant for them
+        if (slides) setTimeout(() => !$selected.id && selected.set({ id: "slide", data: slides }), 100)
+    }
+    function newFolder() {
+        category = createThemeFolder()
+        renamingFolder = true
+    }
+
+    let renamingFolder = false
+    $: if (!open || !packageId) renamingFolder = false
+    function renameFolder(e: Event) {
+        const name = (e.currentTarget as HTMLInputElement).value.trim()
+        renamingFolder = false
+        if (!name || !packageId) return
+        templateCategories.update((a) => {
+            if (a[packageId]) a[packageId].name = name
+            return a
+        })
+    }
+    function selectAll(elem: HTMLInputElement) {
+        setTimeout(() => {
+            elem.focus()
+            elem.select()
+        })
+    }
+
+    function themeTileClick(e: any, templateId: string) {
+        // typing a new name is not a click on the theme
+        const target = (e?.detail?.target || e?.target) as HTMLElement | undefined
+        if (target?.closest?.(".edit") || $activeRename === "template_" + templateId) return
+        themeClick(templateId)
     }
 
     function removeTheme() {
@@ -101,12 +173,15 @@
     function windowMousedown(e: MouseEvent) {
         if (!open) return
         const target = e.target as HTMLElement | null
-        if (target?.closest(".themePanelWrap") || target?.closest(".contextMenu") || target?.closest(".popup")) return
+        if (target?.closest(".themePanelWrap") || target?.closest(".contextMenu") || target?.closest(".popup") || $contextActive) return
         open = false
     }
 
     function keydown(e: KeyboardEvent) {
-        if (open && e.key === "Escape") open = false
+        if (!open || e.key !== "Escape" || $activeRename) return
+        if (renamingFolder) renamingFolder = false
+        else if (searchValue) searchValue = ""
+        else open = false
     }
 </script>
 
@@ -130,7 +205,22 @@
                     <div class="spacer" />
                 {/if}
 
-                <h3>{currentFolder ? currentFolder.name : translateText("actions.themes", $dictionary)}</h3>
+                {#if renamingFolder && packageId}
+                    <input class="edit folderName" type="text" value={currentFolder?.name || ""} use:selectAll on:change={renameFolder} on:blur={renameFolder} on:keydown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
+                {:else}
+                    <!-- double click (or the pencil) to rename a folder of your own -->
+                    <h3 on:dblclick={() => (renamingFolder = !!packageId && !$templateCategories[packageId]?.default)}>{currentFolder ? currentFolder.name : translateText("actions.themes", $dictionary)}</h3>
+                {/if}
+
+                {#if currentCategory}
+                    <MaterialButton title={translateText("actions.theme_new", $dictionary)} on:click={() => newTheme()}>
+                        <Icon id="add" size={1.2} white />
+                    </MaterialButton>
+                {:else}
+                    <MaterialButton title={translateText("actions.theme_new_folder", $dictionary)} on:click={newFolder}>
+                        <Icon id="add" size={1.2} white />
+                    </MaterialButton>
+                {/if}
 
                 <MaterialButton title={translateText("actions.themes_edit_mode", $dictionary)} isActive={editMode} on:click={() => (editMode = !editMode)}>
                     <Icon id="edit" size={1.2} white={editMode} />
@@ -147,8 +237,19 @@
                 {/if}
             </div>
 
+            {#if grouped.list.length > 6}
+                <div class="search">
+                    <Icon id="search" size={1} white />
+                    <input class="edit" type="text" placeholder={translateText("actions.themes_search", $dictionary)} bind:value={searchValue} />
+                </div>
+            {/if}
+
             <div class="content">
-                {#if !grouped.folders.length}
+                {#if searchQuery}
+                    {#if !searchResults.length}
+                        <p class="empty"><T id="empty.search" /></p>
+                    {/if}
+                {:else if !grouped.folders.length}
                     <p class="empty"><T id="empty.general" /></p>
                 {:else if !currentCategory}
                     {#each grouped.folders as folder (folder.id)}
@@ -159,19 +260,34 @@
                             <Icon id="arrow_right" size={1.1} white />
                         </button>
                     {/each}
-                {:else}
-                    {#if packageId && !editMode}
-                        <div class="package">
+                {:else if !editMode}
+                    <div class="package">
+                        {#if packageId && themes.length}
                             <MaterialButton variant="outlined" icon="templates" disabled={!isShowActive || !themeMap || !Object.keys(themeMap.map).length} title={translateText("actions.theme_apply_package_tip", $dictionary)} on:click={() => applyThemePackage(packageId)} small>
                                 <T id="actions.theme_apply_package" />
                             </MaterialButton>
                             <MaterialButton icon="groups" isActive={mapping} on:click={() => (mapping = !mapping)} small>
                                 <T id="actions.theme_assign_groups" />
                             </MaterialButton>
-                        </div>
-                    {/if}
+                        {/if}
+                        {#if slideSelection}
+                            <MaterialButton icon="add" title={translateText("actions.theme_save_slide_tip", $dictionary)} on:click={() => newTheme(true)} small>
+                                <T id="actions.theme_save_slide" />
+                            </MaterialButton>
+                        {/if}
+                    </div>
                 {/if}
-                {#if currentCategory && mapping && packageId && !editMode}
+                {#if searchQuery}
+                    <div class="grid">
+                        {#each themes as theme (theme.id)}
+                            <div class="tile">
+                                <Card width={100} label={theme.name} color={theme.color} active={theme.id === activeThemeId} {resolution} on:click={() => themeClick(theme.id)}>
+                                    <TemplateSlide templateId={theme.id} template={theme} preview />
+                                </Card>
+                            </div>
+                        {/each}
+                    </div>
+                {:else if currentCategory && mapping && packageId && !editMode}
                     {#if themeMap?.guessed}
                         <p class="hint"><T id="actions.theme_map_guessed" /></p>
                     {/if}
@@ -189,12 +305,18 @@
                         {/each}
                     </div>
                 {:else if currentCategory}
+                    {#if !themes.length}
+                        <p class="empty"><T id="actions.theme_folder_empty" /></p>
+                    {/if}
                     <div class="grid">
                         {#each themes as theme (theme.id)}
                             <div class="tile">
-                                <Card width={100} label={theme.name} color={theme.color} active={theme.id === activeThemeId} {resolution} on:click={() => themeClick(theme.id)}>
-                                    <TemplateSlide templateId={theme.id} template={theme} preview />
-                                </Card>
+                                <!-- right click: rename, color, duplicate, delete, export (the menu of the Templates drawer) -->
+                                <SelectElem id="template" data={theme.id} class="context #template_card{theme.isDefault ? '_default' : ''}" onlyRightClickSelect fill>
+                                    <Card width={100} label={theme.name} renameId="template_{theme.id}" icon={theme.isDefault ? "protected" : null} color={theme.color} active={theme.id === activeThemeId} {resolution} on:click={(e) => themeTileClick(e, theme.id)}>
+                                        <TemplateSlide templateId={theme.id} template={theme} preview />
+                                    </Card>
+                                </SelectElem>
                             </div>
                         {/each}
                     </div>
@@ -216,6 +338,11 @@
     .themePanelWrap {
         position: relative;
         display: flex;
+    }
+    /* the top bar is its own layer (z-index 30), under the sticky header of the show (200):
+       lift it while the panel is open, or the panel's first row ends up behind that header */
+    :global(.top:has(.themePanelWrap .panel)) {
+        z-index: 250 !important;
     }
 
     .panel {
@@ -255,6 +382,41 @@
     }
     .spacer {
         width: 36px;
+    }
+    .folderName {
+        flex: 1;
+        min-width: 0;
+        padding: 4px 8px;
+        font: inherit;
+        font-weight: 600;
+        text-align: center;
+        color: var(--text);
+        background-color: var(--primary-darkest);
+        border: 1px solid var(--secondary);
+        border-radius: 4px;
+        outline: none;
+    }
+
+    .search {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 12px;
+        border-bottom: 1px solid var(--primary-lighter);
+    }
+    .search input {
+        flex: 1;
+        min-width: 0;
+        padding: 4px 2px;
+        font: inherit;
+        color: var(--text);
+        background: none;
+        border: none;
+        outline: none;
+    }
+    .search input::placeholder {
+        color: var(--text);
+        opacity: 0.45;
     }
 
     .target {

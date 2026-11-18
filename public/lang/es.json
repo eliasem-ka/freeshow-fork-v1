@@ -678,6 +678,12 @@
         "custom_action_tip": "Asigna una acción personalizada a esta presentación para que se active cuando se haga clic en este botón"
     },
     "actions": {
+        "theme_new": "Nuevo tema",
+        "theme_new_folder": "Nueva carpeta",
+        "theme_save_slide": "Guardar diapositiva como tema",
+        "theme_save_slide_tip": "Crea un tema en esta carpeta con el diseño de la diapositiva seleccionada",
+        "themes_search": "Buscar temas...",
+        "theme_folder_empty": "Todavía no hay temas aquí",
         "library": "Biblioteca",
         "library_search": "Buscar en la biblioteca...",
         "library_show": "Mostrar la biblioteca",

@@ -679,6 +679,12 @@
         "custom_action_tip": "Assign a custom action for this show to trigger when this button is clicked."
     },
     "actions": {
+        "theme_new": "New theme",
+        "theme_new_folder": "New folder",
+        "theme_save_slide": "Save slide as theme",
+        "theme_save_slide_tip": "Creates a theme in this folder with the design of the selected slide",
+        "themes_search": "Search themes...",
+        "theme_folder_empty": "No themes here yet",
         "library": "Library",
         "library_search": "Search the library...",
         "library_show": "Show the library",

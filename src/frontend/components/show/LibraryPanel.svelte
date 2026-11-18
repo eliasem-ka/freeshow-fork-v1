@@ -196,7 +196,6 @@
                 <p class="empty"><T id={isSearching ? "empty.search" : "empty.shows"} /></p>
             {/if}
         </div>
-
     {/if}
 </div>
 

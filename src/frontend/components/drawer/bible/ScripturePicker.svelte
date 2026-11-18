@@ -82,7 +82,10 @@
     function flush() {
         // a book with a single chapter has nothing to choose there
         if (lastPick === "book" && step === "chapter" && chapterNumbers.length === 1) {
+            // the rest of the book's name may still be coming ("3jua4": the "jua" belongs to 3 Juan)
+            const book = pickedBook
             pickChapter(chapterNumbers[0])
+            pickedBook = book
             return
         }
 
@@ -145,7 +148,7 @@
     function type(char: string) {
         const isDigit = /\d/.test(char)
 
-        if (!isDigit && step === "chapter" && pickedBook) {
+        if (!isDigit && step !== "book" && pickedBook) {
             const tail = pickedBook.tail + char
             if (isStartOfBookName(pickedBook.name, pickedBook.typed + tail)) {
                 pickedBook.tail = tail
@@ -164,6 +167,15 @@
         const next = typed + char
         if (step === "book") {
             const matches = filterBooks(bookList, next)
+            // a number after letters that still fit several books ("fil4": Filipenses or Filemón):
+            // the chapter is being typed, so the first of them is taken
+            if (!matches.length && isDigit && /\D/.test(typed)) {
+                const first = filterBooks(bookList, typed)[0]
+                if (!first) return reject()
+                pickBook(first.id)
+                pending = [char, ...pending]
+                return
+            }
             if (!matches.length) return reject()
             if (matches.length === 1) {
                 pickBook(matches[0].id)

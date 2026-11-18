@@ -22,6 +22,8 @@
     const HEADER_HEIGHT = 34
 
     $: collapsed = !!$special.libraryPanelCollapsed
+    // above the playlists, as in ProPresenter (the arrow button moves it under them)
+    $: onTop = $special.libraryPanelTop !== false
     $: height = Number($special.libraryPanelHeight) || 320
     let active = (($special.libraryPanelCategory as string) || "all") as string
 
@@ -122,9 +124,10 @@
         if (!dragging || !panelElem) return
         const parent = panelElem.parentElement
         if (!parent) return
-        const bottom = panelElem.getBoundingClientRect().bottom
+        const rect = panelElem.getBoundingClientRect()
         const max = parent.clientHeight - 90
-        height = Math.max(MIN_HEIGHT, Math.min(max, bottom - e.clientY))
+        // the edge that is dragged is the one that faces the playlists
+        height = Math.max(MIN_HEIGHT, Math.min(max, onTop ? e.clientY - rect.top : rect.bottom - e.clientY))
     }
     function mouseup() {
         if (!dragging) return
@@ -142,7 +145,7 @@
 
 <svelte:window on:mousemove={mousemove} on:mouseup={mouseup} />
 
-<div class="library" class:collapsed class:dragging bind:this={panelElem} style="height: {collapsed ? HEADER_HEIGHT : height}px;" role="none" on:mouseup={() => focusedArea.set("show_drawer")}>
+<div class="library" class:collapsed class:dragging class:onTop bind:this={panelElem} style="height: {collapsed ? HEADER_HEIGHT : height}px;" role="none" on:mouseup={() => focusedArea.set("show_drawer")}>
     <div class="resize" role="none" on:mousedown={resizeStart} />
 
     <div class="header">
@@ -151,7 +154,10 @@
             <p><T id="actions.library" /></p>
             <span class="count">{list.length}</span>
             <span style="flex: 1;" />
-            <Icon id={collapsed ? "arrow_up" : "arrow_down"} size={1.1} white />
+            <Icon id={collapsed !== onTop ? "arrow_up" : "arrow_down"} size={1.1} white />
+        </MaterialButton>
+        <MaterialButton style="padding: 0.3em 0.6em;" title={translateText(onTop ? "actions.library_move_down" : "actions.library_move_up", $dictionary)} on:click={() => setSpecial("libraryPanelTop", !onTop)}>
+            <Icon id={onTop ? "down" : "up"} size={1.1} white />
         </MaterialButton>
     </div>
 
@@ -221,6 +227,15 @@
         height: 7px;
         cursor: ns-resize;
         z-index: 2;
+    }
+    .library.onTop {
+        order: -1;
+        border-top: none;
+        border-bottom: 2px solid var(--primary-lighter);
+    }
+    .library.onTop .resize {
+        top: auto;
+        bottom: -4px;
     }
     .library.collapsed .resize {
         display: none;

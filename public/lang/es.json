@@ -720,6 +720,8 @@
         "library_search": "Buscar en la biblioteca...",
         "library_show": "Mostrar la biblioteca",
         "library_hide": "Ocultar la biblioteca",
+        "library_move_up": "Mover la biblioteca arriba de las listas",
+        "library_move_down": "Mover la biblioteca debajo de las listas",
         "rename": "Renombrar",
         "recolor": "Cambiar color",
         "remove": "Suprimir",

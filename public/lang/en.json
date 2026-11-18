@@ -721,6 +721,8 @@
         "library_search": "Search the library...",
         "library_show": "Show the library",
         "library_hide": "Hide the library",
+        "library_move_up": "Move the library above the playlists",
+        "library_move_down": "Move the library below the playlists",
         "rename": "Rename",
         "recolor": "Change color",
         "remove": "Remove",

@@ -44,7 +44,7 @@
                     {#key $activeProfile}
                         <Projects />
                     {/key}
-                    <!-- fork: ProPresenter-style library under the playlists -->
+                    <!-- fork: ProPresenter-style library, above the playlists by default (it orders itself with CSS) -->
                     {#if !$focusMode}
                         <LibraryPanel />
                     {/if}

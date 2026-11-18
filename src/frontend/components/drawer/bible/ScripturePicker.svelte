@@ -508,7 +508,8 @@
         </div>
     {/if}
 
-    <div class="preview">
+    <!-- the results need the room while a phrase is being searched -->
+    <div class="preview" class:hidden={textMode}>
         <span class="ref">{reference}</span>
         <span class="text">{@html previewText}</span>
     </div>
@@ -610,6 +611,9 @@
 
     /* COLUMNS */
 
+    .preview.hidden {
+        display: none;
+    }
     .find {
         display: flex;
         padding: 4px;
@@ -666,8 +670,9 @@
     }
     .result {
         display: flex;
+        flex-wrap: wrap;
         align-items: baseline;
-        gap: 14px;
+        gap: 2px 14px;
         padding: 9px 12px;
         font: inherit;
         font-size: 1.05em;
@@ -685,12 +690,14 @@
         border-color: var(--secondary);
     }
     .result .where {
-        flex: 0 0 190px;
+        /* beside the text when there is room, above it in a narrow drawer */
+        flex: 0 0 auto;
+        min-width: 170px;
         font-weight: 700;
         color: var(--secondary);
     }
     .result .what {
-        flex: 1;
+        flex: 1 1 340px;
         white-space: normal;
         line-height: 1.3;
     }

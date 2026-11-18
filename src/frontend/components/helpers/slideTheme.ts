@@ -1,11 +1,11 @@
-// Fork feature: right-click a slide -> "Tema" -> pick a template (ProPresenter-style themes).
+// Fork feature: ProPresenter-style themes — right-click "Tema" menu, top-bar Themes panel, and theme packages.
 // Kept in its own file so upstream merges only touch the small hooks in contextMenus/loadItems/menuClick.
 
 import { get } from "svelte/store"
 import type { Slide } from "../../../types/Show"
-import { activePopup, activeShow, alertMessage, templateCategories, templates } from "../../stores"
+import { activePopup, activeShow, alertMessage, groups, templateCategories, templates } from "../../stores"
 import { newToast } from "../../utils/common"
-import { getAccess } from "../../utils/profile"
+import { getAccess, isGroupHidden } from "../../utils/profile"
 import type { ContextMenuItem } from "../context/contextMenus"
 import { clone, keysToID, sortByName } from "./array"
 import { history } from "./history"
@@ -95,7 +95,146 @@ export function applyShowTheme(templateId: string) {
     const editable = getEditableShow()
     if (!editable || !get(templates)[templateId]) return
 
+    // per-slide templates win over the show template, so a theme applied to the whole show
+    // (e.g. after a theme package) would otherwise leave those slides unchanged
+    const slides: { [key: string]: Slide } = clone(editable.show.slides || {})
+    const withOwnTemplate = Object.values(slides).filter((s) => s?.settings?.template)
+    if (withOwnTemplate.length) {
+        withOwnTemplate.forEach((s) => delete s.settings.template)
+        commitSlides(editable.show, slides)
+    }
+
     history({ id: "TEMPLATE", newData: { id: templateId, data: { createItems: true } }, location: { page: "none", override: "show#" + editable.showId } })
+}
+
+/** Replace the active show's slides as one undo step (layout unchanged). */
+function commitSlides(show: any, newSlides: { [key: string]: Slide }) {
+    const layoutId: string = show.settings?.activeLayout
+    const layout = clone(show.layouts?.[layoutId]?.slides || [])
+    history({
+        id: "slide",
+        newData: { slides: newSlides, layout },
+        oldData: { slides: clone(show.slides || {}), layout },
+        location: { page: "show", show: get(activeShow)!, layout: layoutId }
+    })
+}
+
+/// THEME PACKAGES ///
+// A template category is a theme: each template in it is a "theme slide", and the category's
+// themeMap says which one each group uses ("first" = the show's first slide, "default" = the rest).
+
+export const THEME_ROLE_FIRST = "first"
+export const THEME_ROLE_DEFAULT = "default"
+
+const normalize = (s: string) =>
+    s
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[̀-ͯ]/g, "")
+// name hints used to guess a mapping when the theme has none stored
+const ROLE_HINTS: { [role: string]: RegExp } = {
+    [THEME_ROLE_FIRST]: /titulo|title|portada|primera|first/,
+    pre_chorus: /pre.?coro|pre.?chorus/,
+    chorus: /coro|chorus/,
+    verse: /verso|verse|estrofa/,
+    bridge: /puente|bridge/,
+    intro: /intro/,
+    outro: /final|outro|cierre/,
+    tag: /tag|coletilla/,
+    break: /break|pausa|instrumental/,
+    [THEME_ROLE_DEFAULT]: /defecto|default|general|base|normal/
+}
+
+/** Roles a theme can map: first slide, every (visible) global group, then the default. */
+export function getThemeRoles() {
+    const groupIds = Object.keys(get(groups)).filter((id) => !isGroupHidden(id))
+    return [THEME_ROLE_FIRST, ...groupIds, THEME_ROLE_DEFAULT]
+}
+
+/** Templates that belong to a theme (category), sorted by name. */
+export function getThemeTemplates(categoryId: string) {
+    return sortByName(keysToID(clone(get(templates)))).filter((t) => t.category === categoryId && t?.settings?.mode !== "text")
+}
+
+/** Stored mapping (dropping templates that no longer exist), or a guess from template names. */
+export function getThemeMap(categoryId: string): { map: { [role: string]: string }; guessed: boolean } {
+    const themeTemplates = getThemeTemplates(categoryId)
+    const ids = new Set(themeTemplates.map((t) => t.id))
+
+    const stored = get(templateCategories)[categoryId]?.themeMap
+    if (stored) {
+        const storedMap: { [role: string]: string } = {}
+        Object.entries(stored).forEach(([role, id]) => {
+            if (ids.has(id)) storedMap[role] = id
+        })
+        return { map: storedMap, guessed: false }
+    }
+
+    const map: { [role: string]: string } = {}
+    const roles = getThemeRoles()
+    themeTemplates.forEach((t) => {
+        const name = normalize(t.name || "")
+        const role = Object.keys(ROLE_HINTS).find((r) => roles.includes(r) && ROLE_HINTS[r].test(name))
+        if (role && !map[role]) map[role] = t.id
+    })
+    // nothing named as the default: first unclaimed template, else the verse one
+    if (!map[THEME_ROLE_DEFAULT] && themeTemplates.length) {
+        const claimed = new Set(Object.values(map))
+        map[THEME_ROLE_DEFAULT] = themeTemplates.find((t) => !claimed.has(t.id))?.id || map.verse || themeTemplates[0].id
+    }
+    return { map, guessed: true }
+}
+
+/** Store which template a role uses ("" clears it). The first edit also stores the guessed roles. */
+export function setThemeRole(categoryId: string, role: string, templateId: string) {
+    const current = getThemeMap(categoryId).map
+    templateCategories.update((a) => {
+        if (!a[categoryId]) return a
+        const map = { ...current }
+        if (templateId) map[role] = templateId
+        else delete map[role]
+        a[categoryId].themeMap = map
+        return a
+    })
+}
+
+/** Give every slide of the active show the template its group uses in this theme, as one undo step. */
+export function applyThemePackage(categoryId: string) {
+    const editable = getEditableShow()
+    if (!editable) return
+    const { map } = getThemeMap(categoryId)
+    if (!Object.keys(map).length) return
+
+    const show = editable.show
+    const slides: { [key: string]: Slide } = clone(show.slides || {})
+    const ref = getLayoutRef()
+    const firstSlideId = ref[0]?.id // only the very first slide is the "title"
+
+    let changed = 0
+    let skippedLocked = 0
+    ref.forEach((layoutSlide) => {
+        const slide = slides[layoutSlide.id]
+        if (!slide) return
+        const parentId = layoutSlide.parent?.id || layoutSlide.id
+        const parent = slides[parentId]
+        if (parent?.locked) {
+            skippedLocked++
+            return
+        }
+
+        const group = parent?.globalGroup || ""
+        const templateId = (layoutSlide.id === firstSlideId && map[THEME_ROLE_FIRST]) || (group && map[group]) || map[THEME_ROLE_DEFAULT] || ""
+        if (!templateId || slide.settings?.template === templateId) return
+
+        slide.settings = { ...(slide.settings || {}), template: templateId }
+        changed++
+    })
+
+    if (skippedLocked) newToast("output.state_locked")
+    if (!changed) return
+
+    commitSlides(show, slides)
+    history({ id: "TEMPLATE", save: false, newData: { id: show.settings?.template || "" }, location: { page: "show" } })
 }
 
 /** Template ids currently in use by the active show: its global template, or the one shared by the given slides. */
@@ -119,8 +258,7 @@ export function applySlideTheme(templateId: string, selection: SlideSelection) {
     if (!removing && !get(templates)[templateId]) return
 
     const ref = getLayoutRef()
-    const oldSlides: { [key: string]: Slide } = clone(show.slides || {})
-    const newSlides: { [key: string]: Slide } = clone(oldSlides)
+    const newSlides: { [key: string]: Slide } = clone(show.slides || {})
 
     let changed = 0
     let skippedLocked = 0
@@ -149,14 +287,7 @@ export function applySlideTheme(templateId: string, selection: SlideSelection) {
     if (skippedLocked) newToast("output.state_locked")
     if (!changed) return
 
-    const layoutId: string = show.settings?.activeLayout
-    const layout = clone(show.layouts?.[layoutId]?.slides || [])
-    history({
-        id: "slide",
-        newData: { slides: newSlides, layout },
-        oldData: { slides: oldSlides, layout },
-        location: { page: "show", show: get(activeShow)!, layout: layoutId }
-    })
+    commitSlides(show, newSlides)
 
     // re-render the slides with their (new) templates, same as dropping a template on a slide
     const showTemplateId: string = show.settings?.template || ""

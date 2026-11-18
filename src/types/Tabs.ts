@@ -14,6 +14,7 @@ export interface Category {
     default?: boolean
     description?: string
     isArchive?: boolean
+    themeMap?: { [role: string]: string } // fork: template category used as a theme package (role -> template id)
     tags?: string[] // currently for player videos
     metadata?: Metadata // show category
     action?: string // trigger custom action on content presentation

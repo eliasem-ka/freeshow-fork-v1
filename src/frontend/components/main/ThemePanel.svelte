@@ -2,14 +2,14 @@
     // Fork feature: ProPresenter-style "Themes" button in the top bar.
     // Opens a floating panel: folders (template categories) -> theme thumbnails.
     // Click a thumbnail to apply it to the selected slides, or to the whole show when none are selected.
-    import { activeDrawerTab, activeEdit, activePage, activeShow, dictionary, labelsDisabled, outputs, selected, showsCache, styles, templateCategories, templates } from "../../stores"
+    import { activeDrawerTab, activeEdit, activePage, activeShow, dictionary, groups, labelsDisabled, outputs, selected, showsCache, styles, templateCategories, templates } from "../../stores"
     import { translateText } from "../../utils/language"
     import Card from "../drawer/Card.svelte"
     import TemplateSlide from "../drawer/pages/TemplateSlide.svelte"
     import { clone, keysToID, sortByName } from "../helpers/array"
     import Icon from "../helpers/Icon.svelte"
     import { getResolution } from "../helpers/output"
-    import { applyShowTheme, applySlideTheme, getActiveThemeId, REMOVE_SLIDE_THEME } from "../helpers/slideTheme"
+    import { applyShowTheme, applySlideTheme, applyThemePackage, getActiveThemeId, getThemeMap, getThemeRoles, getThemeTemplates, REMOVE_SLIDE_THEME, setThemeRole, THEME_ROLE_DEFAULT, THEME_ROLE_FIRST } from "../helpers/slideTheme"
     import T from "../helpers/T.svelte"
     import MaterialButton from "../inputs/MaterialButton.svelte"
 
@@ -18,6 +18,7 @@
     let open = false
     let category: string | null = null // null = folder list
     let editMode = false
+    let mapping = false // "assign groups" view of a theme package
 
     $: isShowActive = !!$activeShow?.id && ($activeShow.type || "show") === "show" && !!$showsCache[$activeShow.id]
     $: if (!isShowActive) open = false
@@ -54,10 +55,30 @@
     $: currentCategory = category ?? singleFolder
     $: currentFolder = grouped.folders.find((f) => f.id === currentCategory)
     $: themes = currentCategory ? grouped.byCategory[currentCategory] || [] : []
+    $: if (currentCategory !== undefined) mapping = false
+
+    // THEME PACKAGES: a real category is a theme, each template a "theme slide"
+    $: packageId = currentCategory && currentCategory !== UNCATEGORIZED ? currentCategory : ""
+    $: themeMap = packageId && $templateCategories && $templates ? getThemeMap(packageId) : null
+    $: packageTemplates = packageId && $templates ? getThemeTemplates(packageId) : []
+    $: roles = $groups ? getThemeRoles() : []
+
+    function roleLabel(role: string) {
+        if (role === THEME_ROLE_FIRST) return translateText("actions.theme_role_first", $dictionary)
+        if (role === THEME_ROLE_DEFAULT) return translateText("actions.theme_role_default", $dictionary)
+        const group = $groups[role]
+        if (!group) return role
+        return group.default ? translateText("groups." + group.name, $dictionary) : group.name
+    }
+
+    function roleChange(role: string, e: Event) {
+        if (!packageId) return
+        setThemeRole(packageId, role, (e.currentTarget as HTMLSelectElement).value)
+    }
 
     function toggle() {
         open = !open
-        if (open) editMode = false
+        if (open) editMode = mapping = false
     }
 
     function themeClick(templateId: string) {
@@ -139,6 +160,35 @@
                         </button>
                     {/each}
                 {:else}
+                    {#if packageId && !editMode}
+                        <div class="package">
+                            <MaterialButton variant="outlined" icon="templates" disabled={!isShowActive || !themeMap || !Object.keys(themeMap.map).length} title={translateText("actions.theme_apply_package_tip", $dictionary)} on:click={() => applyThemePackage(packageId)} small>
+                                <T id="actions.theme_apply_package" />
+                            </MaterialButton>
+                            <MaterialButton icon="groups" isActive={mapping} on:click={() => (mapping = !mapping)} small>
+                                <T id="actions.theme_assign_groups" />
+                            </MaterialButton>
+                        </div>
+                    {/if}
+                {/if}
+                {#if currentCategory && mapping && packageId && !editMode}
+                    {#if themeMap?.guessed}
+                        <p class="hint"><T id="actions.theme_map_guessed" /></p>
+                    {/if}
+                    <div class="mapping">
+                        {#each roles as role (role)}
+                            <label class="row">
+                                <span class="role">{roleLabel(role)}</span>
+                                <select value={themeMap?.map[role] || ""} on:change={(e) => roleChange(role, e)}>
+                                    <option value="">{role === THEME_ROLE_DEFAULT ? "—" : translateText("actions.theme_role_unset", $dictionary)}</option>
+                                    {#each packageTemplates as t (t.id)}
+                                        <option value={t.id}>{t.name}</option>
+                                    {/each}
+                                </select>
+                            </label>
+                        {/each}
+                    </div>
+                {:else if currentCategory}
                     <div class="grid">
                         {#each themes as theme (theme.id)}
                             <div class="tile">
@@ -268,6 +318,51 @@
         justify-content: flex-end;
         padding: 4px 6px;
         border-top: 1px solid var(--primary-lighter);
+    }
+
+    .package {
+        display: flex;
+        gap: 6px;
+        padding: 2px 4px 8px;
+        flex-wrap: wrap;
+    }
+
+    .hint {
+        padding: 0 6px 6px;
+        font-size: 0.8em;
+        opacity: 0.6;
+    }
+
+    .mapping {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 0 4px;
+    }
+    .mapping .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 4px 6px;
+        border-radius: 5px;
+    }
+    .mapping .row:hover {
+        background-color: rgb(255 255 255 / 0.04);
+    }
+    .mapping .role {
+        width: 40%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .mapping select {
+        flex: 1;
+        padding: 4px 6px;
+        background-color: var(--primary-darkest, var(--primary-darker));
+        color: var(--text);
+        border: 1px solid var(--primary-lighter);
+        border-radius: 4px;
+        font: inherit;
     }
 
     @media screen and (max-width: 750px) {

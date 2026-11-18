@@ -287,9 +287,10 @@
         tick().then(() => {
             const active = elem?.querySelector(".isActive") as HTMLElement | null
             if (!elem || !active) return
-            const top = active.offsetTop - elem.offsetTop
-            if (top >= elem.scrollTop && top + active.offsetHeight <= elem.scrollTop + elem.clientHeight) return
-            elem.scrollTo(0, Math.max(0, top - 50))
+            const box = elem.getBoundingClientRect()
+            const tile = active.getBoundingClientRect()
+            if (tile.top >= box.top && tile.bottom <= box.bottom) return
+            elem.scrollTo(0, Math.max(0, elem.scrollTop + tile.top - box.top - 50))
         })
     }
 

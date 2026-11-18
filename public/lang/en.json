@@ -679,6 +679,10 @@
         "custom_action_tip": "Assign a custom action for this show to trigger when this button is clicked."
     },
     "actions": {
+        "library": "Library",
+        "library_search": "Search the library...",
+        "library_show": "Show the library",
+        "library_hide": "Hide the library",
         "rename": "Rename",
         "recolor": "Change color",
         "remove": "Remove",

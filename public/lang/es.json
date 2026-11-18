@@ -678,6 +678,10 @@
         "custom_action_tip": "Asigna una acción personalizada a esta presentación para que se active cuando se haga clic en este botón"
     },
     "actions": {
+        "library": "Biblioteca",
+        "library_search": "Buscar en la biblioteca...",
+        "library_show": "Mostrar la biblioteca",
+        "library_hide": "Ocultar la biblioteca",
         "rename": "Renombrar",
         "recolor": "Cambiar color",
         "remove": "Suprimir",

@@ -1566,6 +1566,18 @@ export const API_SCHEMA_DATA: { [action: string]: { group: string; legacy?: bool
                 },
                 category: {
                     type: "string"
+                },
+                addToProject: {
+                    type: "boolean",
+                    description: "Add it to the project that is open. Default false: it only goes into the library."
+                },
+                projectId: {
+                    type: "string",
+                    description: "Add it to this project instead."
+                },
+                open: {
+                    type: "boolean",
+                    description: "Open it in the app. Default false: the operator keeps what is on their screen."
                 }
             },
             required: ["text"]

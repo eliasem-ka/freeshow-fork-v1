@@ -5,7 +5,6 @@ import { AudioMicrophone } from "../../audio/audioMicrophone"
 import { AudioPlayer } from "../../audio/audioPlayer"
 import { AudioPlaylist } from "../../audio/audioPlaylist"
 import { markItemsAsPlayed } from "../../converters/project"
-import { convertText } from "../../converters/txt"
 import { sendMain } from "../../IPC/main"
 import { slideTimelineSpeedMultiplier } from "../../stores"
 import { transposeText } from "../../utils/chordTranspose"
@@ -33,7 +32,7 @@ import { getActions, getOutput, getOutputGroupName, getOutputSlideText, getPlayi
 import { createScriptureCollection } from "../drawer/bible/scripture"
 import { createAnimatedSong, type API_animated_song } from "./custom/songShow"
 import { createLyricTemplate, type API_lyric_template } from "./custom/lyricTemplate"
-import { deleteShows, trimProject, type API_delete_shows, type API_trim_project } from "./custom/showAdmin"
+import { createShowAPI, deleteShows, trimProject, type API_create_show, type API_delete_shows, type API_trim_project } from "./custom/showAdmin"
 import { getApiSchema, type API_schema } from "./custom/apiSchema"
 import {
     addFactoryThemes,
@@ -249,7 +248,6 @@ export type API_add_to_project = { projectId: string; id: string; data?: any }
 
 // CREATE
 
-export type API_create_show = { text: string; name?: string; category?: string }
 export type API_create_project = { name: string; id?: string }
 
 // EDIT
@@ -443,7 +441,7 @@ export const API_ACTIONS = {
     add_to_project: (data: API_add_to_project) => addToProject(data),
 
     // CREATE
-    create_show: (data: API_create_show) => convertText({ noFormatting: true, open: false, ...data }),
+    create_show: (data: API_create_show) => createShowAPI(data),
     create_project: (data: API_create_project) => createProject(data),
     create_animated_song: (data: API_animated_song) => createAnimatedSong(data),
     create_lyric_template: (data: API_lyric_template) => createLyricTemplate(data),

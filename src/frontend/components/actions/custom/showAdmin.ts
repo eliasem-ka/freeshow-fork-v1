@@ -8,7 +8,8 @@
 // Wired in through a single entry in API_ACTIONS, like the other custom modules.
 
 import { get } from "svelte/store"
-import { projects, shows } from "../../../stores"
+import { convertText } from "../../../converters/txt"
+import { activeProject, projects, shows } from "../../../stores"
 import { history } from "../../helpers/history"
 
 export type API_delete_shows = {
@@ -103,3 +104,28 @@ export function trimProject(data: API_trim_project) {
  * .show files directly while FreeShow is closed. For anything created through
  * the API, FreeShow's own save on quit is the only safe path.
  */
+
+/// CREATE ///
+
+export type API_create_show = {
+    text: string
+    name?: string
+    category?: string
+    /** Add it to the project that is open. Default false: it only goes into the library. */
+    addToProject?: boolean
+    /** Add it to this project instead. */
+    projectId?: string
+    /** Open it in the app. Default false: the operator keeps what is on their screen. */
+    open?: boolean
+}
+
+/** API: create a show from plain text. Returns its id, so it can be themed, edited or presented next. */
+export function createShowAPI(data: API_create_show) {
+    if (!data?.text) return { error: "text is required" }
+    const project = data.projectId || (data.addToProject ? get(activeProject) || "" : "")
+    if (data.projectId && !get(projects)[data.projectId]) return { error: "project not found: " + data.projectId }
+
+    const { text, name, category } = data
+    const created = convertText({ noFormatting: true, text, name, category, open: !!data.open, project })
+    return { id: created.id, name: created.show?.name || name || "", project: project || null }
+}

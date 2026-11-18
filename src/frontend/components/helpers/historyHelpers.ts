@@ -401,7 +401,8 @@ export const _updaters = {
 
             // don't open when importing lots of songs
             // if (data.open !== false)
-            if (!get(focusMode)) {
+            // fork: remember.open === false keeps the show that is open (shows made through the API)
+            if (!get(focusMode) && data.remember?.open !== false) {
                 activeShow.set(showRef)
                 activeEdit.set({ type: "show", slide: 0, items: [], showId: showRef.id })
             }

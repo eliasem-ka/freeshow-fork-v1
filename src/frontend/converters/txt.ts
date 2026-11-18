@@ -48,7 +48,7 @@ export function convertTexts(files: { content: string; name?: string; extension?
 
 // convert a plain text input into a show
 // , onlySlides: boolean = false, { existingSlides } = { existingSlides: {} }
-export function convertText({ name = "", origin = "", category = null, text, noFormatting = false, returnData = false, open = true }: any) {
+export function convertText({ name = "", origin = "", category = null, text, noFormatting = false, returnData = false, open = true, project = undefined }: any) {
     // remove empty spaces (as groups [] should be used for empty slides)
     // in "Text edit" spaces can be used to create empty "child" slides
     text = text.replaceAll("\r", "").replaceAll("\n \n", "\n\n")
@@ -178,12 +178,11 @@ export function convertText({ name = "", origin = "", category = null, text, noF
     const showId = uid()
     if (returnData) return { id: showId, show }
 
-    if (!open) {
-        // WIP DON'T OPEN
-    }
-
+    // fork: "project" says where the show goes ("" = only the library). Left out, it goes to the open project as always.
+    // A show made in the background (open: false, the API) is not opened and takes no place in a project unless asked.
     const selectedIndex = get(activeShow)?.index === undefined ? undefined : get(activeShow)!.index! + 1
-    history({ id: "UPDATE", newData: { data: show, remember: { project: get(activeProject), index: selectedIndex } }, oldData: { id: showId }, location: { page: "show", id: "show" } })
+    const remember = open ? { project: project === undefined ? get(activeProject) : project || null, index: selectedIndex } : { project: project || null, open: false }
+    history({ id: "UPDATE", newData: { data: show, remember }, oldData: { id: showId }, location: { page: "show", id: "show" } })
 
     return { id: showId, show }
 }

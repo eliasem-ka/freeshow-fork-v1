@@ -55,7 +55,7 @@ export const API_DESCRIPTIONS: { [action: string]: string } = {
     get_show_layout: "The slides of a show in presentation order.",
     get_plain_text: "The text of a show as plain text with [Group] markers.",
     set_plain_text: "Replace the text of a show from plain text with [Group] markers.",
-    create_show: "Create a show from plain text.",
+    create_show: "Create a show from plain text and return its id. It only goes into the library: pass addToProject or projectId to put it in a project, and open to show it in the app.",
     get_projects: "List the projects (service plans).",
     get_project: "One project and its items.",
     create_project: "Create a project.",

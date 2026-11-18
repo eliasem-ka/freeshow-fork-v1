@@ -19,13 +19,16 @@ import { dataFolderNames, deleteFile, doesPathExist, getDataFolderPath, getDataF
 import { clone, wait } from "../utils/helpers"
 import "./contentProviders"
 import { defaultConfig, defaultSettings, defaultSyncedSettings } from "./defaults"
+import { tempData } from "./tempData"
 
 // NOTE: defaults will always replace the keys with any in the default when they are removed
 
 // throwaway test path for Playwright tests
-const mockStorePath = process.env.FS_MOCK_STORE_PATH
+const mockStorePath = process.env.FS_MOCK_STORE_PATH || tempData?.storePath
 
 export const config = new Store<Config>({ defaults: defaultConfig, cwd: mockStorePath })
+// fork: in temporary data mode the data folder is the throwaway one as well (see tempData.ts)
+if (tempData) config.set("dataPath", tempData.dataPath)
 
 export const storeFilesData = {
     SHOWS: { fileName: "shows", portable: false, defaults: {} as TrimmedShows, minify: true }, // cache

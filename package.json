@@ -20,6 +20,8 @@
         "rebuild-opus": "electron-rebuild -f -o @discordjs/opus && node scripts/opus.js",
         "---DEVELOPMENT---": "",
         "start": "node scripts/start.js",
+        "start:temp": "npx cross-env FS_TEMP_DATA=1 node scripts/start.js",
+        "start:temp:copy": "npx cross-env FS_TEMP_DATA=copy node scripts/start.js",
         "start:old": "npx cross-env NODE_ENV=development npm-run-all -p -r build:frontend:dev start:electron",
         "build:frontend:dev": "npx cross-env NODE_ENV=development vite",
         "start:electron": "npm-run-all -p build:electron:dev:watch start:electron:dev",

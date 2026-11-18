@@ -2,6 +2,7 @@
 // This is the electron entry point
 
 import type { Rectangle } from "electron"
+import { tempData } from "./data/tempData"
 import { BrowserWindow, Menu, app, ipcMain, powerSaveBlocker, protocol, screen } from "electron"
 import { AUDIO, BLACKMAGIC, CLOUD, EXPORT, MAIN, NDI, OMT, OUTPUT, STARTUP } from "../types/Channels"
 import { Main } from "../types/IPC/Main"
@@ -234,6 +235,12 @@ function createMain() {
 
     if (RECORD_STARTUP_TIME) console.time("Main window content")
     loadWindowContent(mainWindow)
+
+    // fork: make it plain that this window works on throwaway data (data/tempData.ts)
+    if (tempData) {
+        mainWindow.on("page-title-updated", (e) => e.preventDefault())
+        mainWindow.setTitle("FreeShow — TEMPORARY DATA")
+    }
     setMainListeners()
 
     if (RECORD_STARTUP_TIME) console.timeEnd("Main window")

@@ -15,6 +15,7 @@ import { isOutputBound } from "../helpers/output"
 import { getLayoutRef } from "../helpers/show"
 import { _show } from "../helpers/shows"
 import { createTagItems, getSelectedTagIds } from "../helpers/tags"
+import { loadSlideThemeItems } from "../helpers/slideTheme"
 import { type ContextMenuItem } from "./contextMenus"
 
 const loadActions = {
@@ -102,6 +103,7 @@ const loadActions = {
             { label: "media.video", icon: "video", id: "video", enabled: view === "video" }
         ]
     },
+    slide_theme: () => loadSlideThemeItems(get(selected).data || []), // fork
     slide_groups: (items: ContextMenuItem[]) => {
         const selectedIndex = get(selected).data[0]?.index
         const ref = getLayoutRef()

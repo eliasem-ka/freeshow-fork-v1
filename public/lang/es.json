@@ -747,6 +747,8 @@
         "converting": "Convirtiendo...",
         "closing": "Cerrando aplicación...",
         "remove_template_from_show": "Quitar plantilla de la presentación",
+        "slide_theme": "Tema",
+        "remove_slide_theme": "Quitar tema",
         "reset_defaults": "Restablecer valores predeterminados",
         "to_all": "Aplicar a todo",
         "to_following": "Aplicar al siguiente",

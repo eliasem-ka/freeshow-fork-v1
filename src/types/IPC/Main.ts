@@ -106,6 +106,7 @@ export enum Main {
     // MEDIA_BASE64 = "MEDIA_BASE64",
     READ_AUDIO_METADATA = "READ_AUDIO_METADATA",
     CAPTURE_SLIDE = "CAPTURE_SLIDE",
+    CAPTURE_THEME_PREVIEW = "CAPTURE_THEME_PREVIEW", // fork: theme API
     ACCESS_CAMERA_PERMISSION = "ACCESS_CAMERA_PERMISSION",
     ACCESS_MICROPHONE_PERMISSION = "ACCESS_MICROPHONE_PERMISSION",
     ACCESS_SCREEN_PERMISSION = "ACCESS_SCREEN_PERMISSION",
@@ -232,6 +233,7 @@ export interface MainSendPayloads {
     // [Main.MEDIA_BASE64]: { id: string; path: string }[]
     [Main.READ_AUDIO_METADATA]: { filePath: string }
     [Main.CAPTURE_SLIDE]: { output: { [key: string]: Output }; resolution: Resolution }
+    [Main.CAPTURE_THEME_PREVIEW]: { output: { [key: string]: Output }; shows: { [key: string]: Show }; resolution: Resolution; wait?: number }
     [Main.START_SLIDESHOW]: { path: string; program: string }
     [Main.PRESENTATION_CONTROL]: { action: string }
     [Main.START]: { ports: { [key: string]: number }; max: number; disabled: { [key: string]: boolean }; data: { [key: string]: ServerData } }
@@ -364,6 +366,7 @@ export interface MainReturnPayloads {
     // [Main.MEDIA_BASE64]: { id: string; content: string }[]
     [Main.READ_AUDIO_METADATA]: Promise<any>
     [Main.CAPTURE_SLIDE]: Promise<{ base64: string } | null>
+    [Main.CAPTURE_THEME_PREVIEW]: Promise<{ base64: string } | null>
     [Main.SLIDESHOW_GET_APPS]: string[]
     [Main.GET_MIDI_OUTPUTS]: { name: string }[]
     [Main.GET_MIDI_INPUTS]: { name: string }[]

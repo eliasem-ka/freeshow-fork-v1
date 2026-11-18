@@ -26,6 +26,7 @@ import { checkIfMediaDownloaded, downloadLessonsMedia, downloadMedia } from "../
 import { importShow } from "../data/import"
 import { save } from "../data/save"
 import { _store, appDataPath, config, createStores, getStore, getStoreValue, setStoreValue } from "../data/store"
+import { captureThemePreview } from "../data/themePreview"
 import { captureSlide, doesMediaExist, getThumbnail, getThumbnailFolderPath, pdfToImage, saveImage } from "../data/thumbnails"
 import { OutputHelper } from "../output/OutputHelper"
 import { pptToPdf } from "../output/ppt/pptToPdf"
@@ -136,6 +137,7 @@ export const mainResponses: MainResponses = {
     // [Main.MEDIA_BASE64]: (data) => storeMedia(data),
     [Main.READ_AUDIO_METADATA]: async (data) => await getAudioMetadata(data.filePath),
     [Main.CAPTURE_SLIDE]: (data) => captureSlide(data),
+    [Main.CAPTURE_THEME_PREVIEW]: (data) => captureThemePreview(data),
     [Main.ACCESS_CAMERA_PERMISSION]: () => getPermission("camera"),
     [Main.ACCESS_MICROPHONE_PERMISSION]: () => getPermission("microphone"),
     [Main.ACCESS_SCREEN_PERMISSION]: () => getPermission("screen"),

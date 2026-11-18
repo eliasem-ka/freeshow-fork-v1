@@ -13,6 +13,11 @@
     import T from "../helpers/T.svelte"
     import MaterialButton from "../inputs/MaterialButton.svelte"
     import SelectElem from "../system/SelectElem.svelte"
+    import { Main } from "../../../types/IPC/Main"
+    import { sendMain } from "../../IPC/main"
+    import { addFactoryThemes } from "../actions/custom/themeApi"
+    import ThemeFolderTools from "./ThemeFolderTools.svelte"
+    import ThemeQuickEdit from "./ThemeQuickEdit.svelte"
 
     const UNCATEGORIZED = "__uncategorized__"
 
@@ -20,6 +25,9 @@
     let category: string | null = null // null = folder list
     let editMode = false
     let mapping = false // "assign groups" view of a theme package
+    let tools = false // colours, fonts, outputs and export of a folder
+    let quickEditId = "" // theme open in the quick editor
+    $: if (!open || !$templates[quickEditId]) quickEditId = ""
 
     $: isShowActive = !!$activeShow?.id && ($activeShow.type || "show") === "show" && !!$showsCache[$activeShow.id]
     $: if (!isShowActive) open = false
@@ -82,7 +90,7 @@
     $: currentCategory = category ?? singleFolder
     $: currentFolder = grouped.folders.find((f) => f.id === currentCategory)
     $: themes = searchQuery ? searchResults : currentCategory ? grouped.byCategory[currentCategory] || [] : []
-    $: if (currentCategory !== undefined) mapping = false
+    $: if (currentCategory !== undefined) mapping = tools = false
 
     // THEME PACKAGES: a real category is a theme, each template a "theme slide"
     $: packageId = currentCategory && currentCategory !== UNCATEGORIZED ? currentCategory : ""
@@ -105,15 +113,12 @@
 
     function toggle() {
         open = !open
-        if (open) editMode = mapping = false
+        if (open) editMode = mapping = tools = false
     }
 
     function themeClick(templateId: string) {
         if (editMode) {
-            activeDrawerTab.set("templates")
-            activeEdit.set({ type: "template", id: templateId, items: [] })
-            activePage.set("edit")
-            open = false
+            quickEditId = templateId
             return
         }
 
@@ -125,11 +130,25 @@
         } else applyShowTheme(templateId)
     }
 
+    function openFullEditor(templateId: string) {
+        activeDrawerTab.set("templates")
+        activeEdit.set({ type: "template", id: templateId, items: [] })
+        activePage.set("edit")
+        open = false
+    }
+
+    function factoryThemes() {
+        category = addFactoryThemes().categoryId
+    }
+    function importThemes() {
+        sendMain(Main.IMPORT, { channel: "freeshow_template", format: { name: translateText("formats.template", $dictionary), extensions: ["fstemplate", "fst", "template", "json", "zip"] } })
+    }
+
     // CREATE
 
     function newTheme(fromSlide = false) {
         if (!currentCategory) return
-        editMode = mapping = false
+        editMode = mapping = tools = false
         searchValue = ""
         const slides = slideSelection
         createTheme(currentCategory === UNCATEGORIZED ? "" : currentCategory, fromSlide ? slides : null)
@@ -178,7 +197,7 @@
     }
 
     function keydown(e: KeyboardEvent) {
-        if (!open || e.key !== "Escape" || $activeRename) return
+        if (!open || e.key !== "Escape" || $activeRename || quickEditId) return
         if (renamingFolder) renamingFolder = false
         else if (searchValue) searchValue = ""
         else open = false
@@ -227,108 +246,127 @@
                 </MaterialButton>
             </div>
 
-            <div class="target" class:editing={editMode}>
-                {#if editMode}
-                    <T id="actions.themes_edit_hint" />
-                {:else if slideSelection}
-                    {translateText("actions.themes_applies_selected", $dictionary, [String(slideSelection.length)])}
-                {:else}
-                    <T id="actions.themes_applies_show" />
-                {/if}
-            </div>
-
-            {#if grouped.list.length > 6}
-                <div class="search">
-                    <Icon id="search" size={1} white />
-                    <input class="edit" type="text" placeholder={translateText("actions.themes_search", $dictionary)} bind:value={searchValue} />
+            {#if quickEditId}
+                <div class="content">
+                    <ThemeQuickEdit templateId={quickEditId} on:close={() => (quickEditId = "")} on:fullEditor={() => openFullEditor(quickEditId)} />
                 </div>
-            {/if}
-
-            <div class="content">
-                {#if searchQuery}
-                    {#if !searchResults.length}
-                        <p class="empty"><T id="empty.search" /></p>
+            {:else}
+                <div class="target" class:editing={editMode}>
+                    {#if editMode}
+                        <T id="actions.themes_edit_hint" />
+                    {:else if slideSelection}
+                        {translateText("actions.themes_applies_selected", $dictionary, [String(slideSelection.length)])}
+                    {:else}
+                        <T id="actions.themes_applies_show" />
                     {/if}
-                {:else if !grouped.folders.length}
-                    <p class="empty"><T id="empty.general" /></p>
-                {:else if !currentCategory}
-                    {#each grouped.folders as folder (folder.id)}
-                        <button class="folder" on:click={() => (category = folder.id)}>
-                            <Icon id={folder.icon} size={1.2} white />
-                            <span class="name">{folder.name}</span>
-                            <span class="count">{folder.count}</span>
-                            <Icon id="arrow_right" size={1.1} white />
-                        </button>
-                    {/each}
-                {:else if !editMode}
-                    <div class="package">
-                        {#if packageId && themes.length}
-                            <MaterialButton variant="outlined" icon="templates" disabled={!isShowActive || !themeMap || !Object.keys(themeMap.map).length} title={translateText("actions.theme_apply_package_tip", $dictionary)} on:click={() => applyThemePackage(packageId)} small>
-                                <T id="actions.theme_apply_package" />
-                            </MaterialButton>
-                            <MaterialButton icon="groups" isActive={mapping} on:click={() => (mapping = !mapping)} small>
-                                <T id="actions.theme_assign_groups" />
-                            </MaterialButton>
-                        {/if}
-                        {#if slideSelection}
-                            <MaterialButton icon="add" title={translateText("actions.theme_save_slide_tip", $dictionary)} on:click={() => newTheme(true)} small>
-                                <T id="actions.theme_save_slide" />
-                            </MaterialButton>
-                        {/if}
+                </div>
+
+                {#if grouped.list.length > 6}
+                    <div class="search">
+                        <Icon id="search" size={1} white />
+                        <input class="edit" type="text" placeholder={translateText("actions.themes_search", $dictionary)} bind:value={searchValue} />
                     </div>
                 {/if}
-                {#if searchQuery}
-                    <div class="grid">
-                        {#each themes as theme (theme.id)}
-                            <div class="tile">
-                                <Card width={100} label={theme.name} color={theme.color} active={theme.id === activeThemeId} {resolution} on:click={() => themeClick(theme.id)}>
-                                    <TemplateSlide templateId={theme.id} template={theme} preview />
-                                </Card>
-                            </div>
+
+                <div class="content">
+                    {#if searchQuery}
+                        {#if !searchResults.length}
+                            <p class="empty"><T id="empty.search" /></p>
+                        {/if}
+                    {:else if !grouped.folders.length}
+                        <p class="empty"><T id="empty.general" /></p>
+                    {:else if !currentCategory}
+                        {#each grouped.folders as folder (folder.id)}
+                            <button class="folder" on:click={() => (category = folder.id)}>
+                                <Icon id={folder.icon} size={1.2} white />
+                                <span class="name">{folder.name}</span>
+                                <span class="count">{folder.count}</span>
+                                <Icon id="arrow_right" size={1.1} white />
+                            </button>
                         {/each}
-                    </div>
-                {:else if currentCategory && mapping && packageId && !editMode}
-                    {#if themeMap?.guessed}
-                        <p class="hint"><T id="actions.theme_map_guessed" /></p>
+                        <div class="package library">
+                            <MaterialButton icon="star" title={translateText("actions.theme_factory_tip", $dictionary)} on:click={factoryThemes} small>
+                                <T id="actions.theme_factory" />
+                            </MaterialButton>
+                            <MaterialButton icon="import" title={translateText("actions.theme_import_tip", $dictionary)} on:click={importThemes} small>
+                                <T id="actions.import" />
+                            </MaterialButton>
+                        </div>
+                    {:else if !editMode}
+                        <div class="package">
+                            {#if packageId && themes.length}
+                                <MaterialButton variant="outlined" icon="templates" disabled={!isShowActive || !themeMap || !Object.keys(themeMap.map).length} title={translateText("actions.theme_apply_package_tip", $dictionary)} on:click={() => applyThemePackage(packageId)} small>
+                                    <T id="actions.theme_apply_package" />
+                                </MaterialButton>
+                                <MaterialButton icon="groups" isActive={mapping} on:click={() => ((mapping = !mapping), (tools = false))} small>
+                                    <T id="actions.theme_assign_groups" />
+                                </MaterialButton>
+                                <MaterialButton icon="color" isActive={tools} on:click={() => ((tools = !tools), (mapping = false))} small>
+                                    <T id="actions.theme_tools" />
+                                </MaterialButton>
+                            {/if}
+                            {#if slideSelection}
+                                <MaterialButton icon="add" title={translateText("actions.theme_save_slide_tip", $dictionary)} on:click={() => newTheme(true)} small>
+                                    <T id="actions.theme_save_slide" />
+                                </MaterialButton>
+                            {/if}
+                        </div>
                     {/if}
-                    <div class="mapping">
-                        {#each roles as role (role)}
-                            <label class="row">
-                                <span class="role">{roleLabel(role)}</span>
-                                <select value={themeMap?.map[role] || ""} on:change={(e) => roleChange(role, e)}>
-                                    <option value="">{role === THEME_ROLE_DEFAULT ? "—" : translateText("actions.theme_role_unset", $dictionary)}</option>
-                                    {#each packageTemplates as t (t.id)}
-                                        <option value={t.id}>{t.name}</option>
-                                    {/each}
-                                </select>
-                            </label>
-                        {/each}
-                    </div>
-                {:else if currentCategory}
-                    {#if !themes.length}
-                        <p class="empty"><T id="actions.theme_folder_empty" /></p>
-                    {/if}
-                    <div class="grid">
-                        {#each themes as theme (theme.id)}
-                            <div class="tile">
-                                <!-- right click: rename, color, duplicate, delete, export (the menu of the Templates drawer) -->
-                                <SelectElem id="template" data={theme.id} class="context #template_card{theme.isDefault ? '_default' : ''}" onlyRightClickSelect fill>
-                                    <Card width={100} label={theme.name} renameId="template_{theme.id}" icon={theme.isDefault ? "protected" : null} color={theme.color} active={theme.id === activeThemeId} {resolution} on:click={(e) => themeTileClick(e, theme.id)}>
+                    {#if searchQuery}
+                        <div class="grid">
+                            {#each themes as theme (theme.id)}
+                                <div class="tile">
+                                    <Card width={100} label={theme.name} color={theme.color} active={theme.id === activeThemeId} {resolution} on:click={() => themeClick(theme.id)}>
                                         <TemplateSlide templateId={theme.id} template={theme} preview />
                                     </Card>
-                                </SelectElem>
-                            </div>
-                        {/each}
+                                </div>
+                            {/each}
+                        </div>
+                    {:else if currentCategory && tools && packageId && !editMode}
+                        <ThemeFolderTools categoryId={packageId} />
+                    {:else if currentCategory && mapping && packageId && !editMode}
+                        {#if themeMap?.guessed}
+                            <p class="hint"><T id="actions.theme_map_guessed" /></p>
+                        {/if}
+                        <div class="mapping">
+                            {#each roles as role (role)}
+                                <label class="row">
+                                    <span class="role">{roleLabel(role)}</span>
+                                    <select value={themeMap?.map[role] || ""} on:change={(e) => roleChange(role, e)}>
+                                        <option value="">{role === THEME_ROLE_DEFAULT ? "—" : translateText("actions.theme_role_unset", $dictionary)}</option>
+                                        {#each packageTemplates as t (t.id)}
+                                            <option value={t.id}>{t.name}</option>
+                                        {/each}
+                                    </select>
+                                </label>
+                            {/each}
+                        </div>
+                    {:else if currentCategory}
+                        {#if !themes.length}
+                            <p class="empty"><T id="actions.theme_folder_empty" /></p>
+                        {/if}
+                        <div class="grid">
+                            {#each themes as theme (theme.id)}
+                                <div class="tile">
+                                    <!-- right click: rename, color, duplicate, delete, export (the menu of the Templates drawer) -->
+                                    <SelectElem id="template" data={theme.id} class="context #template_card{theme.isDefault ? '_default' : ''}" onlyRightClickSelect fill>
+                                        <Card width={100} label={theme.name} renameId="template_{theme.id}" icon={theme.isDefault ? "protected" : null} color={theme.color} active={theme.id === activeThemeId} {resolution} on:click={(e) => themeTileClick(e, theme.id)}>
+                                            <TemplateSlide templateId={theme.id} template={theme} preview />
+                                        </Card>
+                                    </SelectElem>
+                                </div>
+                            {/each}
+                        </div>
+                    {/if}
+                </div>
+
+                {#if slideSelection && !editMode}
+                    <div class="footer">
+                        <MaterialButton icon="remove_circle" disabled={!activeThemeId} on:click={removeTheme}>
+                            <T id="actions.remove_slide_theme" />
+                        </MaterialButton>
                     </div>
                 {/if}
-            </div>
-
-            {#if slideSelection && !editMode}
-                <div class="footer">
-                    <MaterialButton icon="remove_circle" disabled={!activeThemeId} on:click={removeTheme}>
-                        <T id="actions.remove_slide_theme" />
-                    </MaterialButton>
-                </div>
             {/if}
         </div>
     {/if}
@@ -482,6 +520,11 @@
         border-top: 1px solid var(--primary-lighter);
     }
 
+    .package.library {
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid var(--primary-lighter);
+    }
     .package {
         display: flex;
         gap: 6px;

@@ -34,6 +34,46 @@ import { createScriptureCollection } from "../drawer/bible/scripture"
 import { createAnimatedSong, type API_animated_song } from "./custom/songShow"
 import { createLyricTemplate, type API_lyric_template } from "./custom/lyricTemplate"
 import { deleteShows, trimProject, type API_delete_shows, type API_trim_project } from "./custom/showAdmin"
+import { getApiSchema, type API_schema } from "./custom/apiSchema"
+import {
+    addFactoryThemes,
+    applyTemplateAPI,
+    applyThemePackageAPI,
+    createTemplateAPI,
+    createTemplateCategoryAPI,
+    deleteTemplateAPI,
+    duplicateTemplateAPI,
+    exportThemePackage,
+    getFontsAPI,
+    getMediaAPI,
+    getMediaFoldersAPI,
+    getOutputStylesAPI,
+    getTemplateAPI,
+    getTemplateCategoriesAPI,
+    getTemplatesAPI,
+    getThemePaletteAPI,
+    importThemeFileAPI,
+    renderTemplatePreview,
+    replaceThemeValueAPI,
+    setBackgroundAPI,
+    setOutputStyleTemplateAPI,
+    setThemeRoleAPI,
+    updateTemplateAPI,
+    type API_background,
+    type API_media_list,
+    type API_style_template,
+    type API_template_apply,
+    type API_template_create,
+    type API_template_duplicate,
+    type API_template_preview,
+    type API_template_update,
+    type API_theme_export,
+    type API_theme_import,
+    type API_theme_package_apply,
+    type API_theme_palette,
+    type API_theme_replace,
+    type API_theme_role
+} from "./custom/themeApi"
 import {
     addGroup,
     addToProject,
@@ -123,6 +163,7 @@ interface API {
     returnId?: string
 }
 type API_id = { id: string }
+type API_name = { name: string }
 export type API_id_optional = { id?: string }
 type API_index = { index: number }
 type API_strval = { value: string }
@@ -408,6 +449,36 @@ export const API_ACTIONS = {
     create_lyric_template: (data: API_lyric_template) => createLyricTemplate(data),
     delete_shows: (data: API_delete_shows) => deleteShows(data),
     trim_project: (data: API_trim_project) => trimProject(data),
+
+    // THEMES (fork: custom/themeApi.ts)
+    get_templates: () => getTemplatesAPI(),
+    get_template: (data: API_id) => getTemplateAPI(data),
+    get_template_categories: () => getTemplateCategoriesAPI(),
+    create_template: (data: API_template_create) => createTemplateAPI(data),
+    update_template: (data: API_template_update) => updateTemplateAPI(data),
+    delete_template: (data: API_id) => deleteTemplateAPI(data),
+    duplicate_template: (data: API_template_duplicate) => duplicateTemplateAPI(data),
+    create_template_category: (data: API_name) => createTemplateCategoryAPI(data),
+    apply_template: (data: API_template_apply) => applyTemplateAPI(data),
+    set_theme_role: (data: API_theme_role) => setThemeRoleAPI(data),
+    apply_theme_package: (data: API_theme_package_apply) => applyThemePackageAPI(data),
+    render_template_preview: (data: API_template_preview) => renderTemplatePreview(data),
+    get_theme_palette: (data: API_theme_palette) => getThemePaletteAPI(data),
+    replace_theme_value: (data: API_theme_replace) => replaceThemeValueAPI(data),
+    get_fonts: () => getFontsAPI(),
+    export_theme_package: (data: API_theme_export) => exportThemePackage(data),
+    import_theme_file: (data: API_theme_import) => importThemeFileAPI(data),
+    add_factory_themes: () => addFactoryThemes(),
+    get_output_styles: () => getOutputStylesAPI(),
+    set_output_style_template: (data: API_style_template) => setOutputStyleTemplateAPI(data),
+
+    // MEDIA (fork: custom/themeApi.ts)
+    get_media_folders: () => getMediaFoldersAPI(),
+    get_media: (data: API_media_list) => getMediaAPI(data),
+    set_background: (data: API_background) => setBackgroundAPI(data),
+
+    // API (fork: custom/apiSchema.ts)
+    get_api_schema: (data: API_schema) => getApiSchema(data),
 
     // DELETE
     delete_project: (data: API_id) => deleteProject(data.id),

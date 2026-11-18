@@ -1,4 +1,5 @@
 import { get } from "svelte/store"
+import { importThemePackage } from "../components/actions/custom/themeApi"
 import { uid } from "uid"
 import type { Show, Slide } from "../../types/Show"
 import type { StageLayout } from "../../types/Stage"
@@ -104,6 +105,12 @@ export async function importShow(files: { content: string; name?: string; extens
 export function importTemplate(files: { content: string; name?: string; extension?: string }[]) {
     files.forEach(({ content }) => {
         const parsed = JSON.parse(content)
+
+        // fork: a whole theme folder in one file (custom/themeApi.ts)
+        if (parsed.themePackage) {
+            importThemePackage(parsed)
+            return
+        }
 
         // old template export does not have the "template" key (pre 1.4.5)
         const template = parsed.template ? parsed.template : parsed

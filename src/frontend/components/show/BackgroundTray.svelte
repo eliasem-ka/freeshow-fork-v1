@@ -10,11 +10,12 @@
     import MediaLoader from "../drawer/media/MediaLoader.svelte"
     import { openDrawer } from "../edit/scripts/edit"
     import Icon from "../helpers/Icon.svelte"
-    import { getExtension, getMedia, getThumbnailPath, mediaSize } from "../helpers/media"
+    import { getMedia, getThumbnailPath, mediaSize } from "../helpers/media"
     import { getActiveOutputs, setOutput } from "../helpers/output"
     import { getLayoutRef } from "../helpers/show"
     import T from "../helpers/T.svelte"
     import MaterialButton from "../inputs/MaterialButton.svelte"
+    import { changesLiveSlide, getSlideNumbers, getTrayList } from "./backgroundTray"
 
     $: showId = $activeShow?.id || ""
     $: show = $showsCache[showId]
@@ -23,21 +24,8 @@
         special.update((a) => ({ ...a, backgroundTrayCollapsed: !collapsed }))
     }
 
-    const fileName = (path: string) => path.split(/[\\/]/).pop() || path
-    const isMedia = (path: string) => !!path && !/^(https?:|data:|blob:)/.test(path)
-
     // this show's own backgrounds first, then the favourites, each file once
-    $: list = getList(show, $media)
-    function getList(..._updaters: any[]) {
-        const used = Object.values(show?.media || {})
-            .filter((item: any) => item?.path && (item.type === "video" || item.type === "image" || !item.type))
-            .map((item: any) => item.path as string)
-        const favourites = Object.entries($media)
-            .filter(([, style]) => style?.favourite === true && style.audio !== true)
-            .map(([path]) => path)
-        const paths = [...used, ...favourites].filter(isMedia)
-        return paths.filter((path, index) => paths.indexOf(path) === index).map((path) => ({ path, name: fileName(path), video: videoExtensions.includes(getExtension(path)), used: used.includes(path) }))
-    }
+    $: list = getTrayList(show?.media, $media, videoExtensions)
 
     // thumbnails are made the first time a file is seen: until then the path they will have is used
     let thumbnails: { [path: string]: string } = {}
@@ -72,24 +60,26 @@
         const event: MouseEvent | undefined = e?.detail?.event || e
         if (event?.shiftKey) return toOutput(item.path, item.video)
 
-        const indexes = selection ? selection.map((slide) => (slide.index ?? -1) + 1).filter((number) => number > 0) : undefined
         const keep = selection
-        await setBackgroundAPI({ showId, path: item.path, indexes })
-        // the show is on screen: change what is behind it now, not at the next slide
-        if (isLive) toOutput(item.path, item.video)
+        await setBackgroundAPI({ showId, path: item.path, indexes: getSlideNumbers(keep) })
+        // the slide on screen got this background: change what is behind it now, not at the next slide
+        if (isLive && changesLiveSlide(keep, $outputs[outputId]?.out?.slide?.index)) toOutput(item.path, item.video)
         if (keep) setTimeout(() => !$selected.id && selected.set({ id: "slide", data: keep }), 50)
     }
 
     async function remove() {
-        const indexes = selection ? selection.map((slide) => (slide.index ?? -1) + 1).filter((number) => number > 0) : undefined
-        await setBackgroundAPI({ showId, path: "", indexes })
+        await setBackgroundAPI({ showId, path: "", indexes: getSlideNumbers(selection) })
     }
+
+    // also the tooltip: the text is cut short when the slides column is narrow
+    $: targetText = selection ? translateText("actions.themes_applies_selected", $dictionary, [String(selection.length)]) : translateText("actions.themes_applies_show", $dictionary)
 
     $: hasBackground = show ? getLayoutRef(showId).some((entry) => entry.data?.background) : false
 </script>
 
 {#if show}
-    <div class="tray" class:collapsed>
+    <!-- "menus": a click here keeps the slide selection (see deselect in SelectElem.svelte) -->
+    <div class="tray menus" class:collapsed>
         <div class="head">
             <MaterialButton style="padding: 0.2em 0.6em;font-weight: 600;" title={translateText(collapsed ? "actions.backgrounds_show" : "actions.backgrounds_hide", $dictionary)} on:click={toggle}>
                 <Icon id="image" size={1} white />
@@ -97,9 +87,7 @@
                 <Icon id={collapsed ? "arrow_up" : "arrow_down"} size={1} white />
             </MaterialButton>
             {#if !collapsed}
-                <span class="target">
-                    {#if selection}{translateText("actions.themes_applies_selected", $dictionary, [String(selection.length)])}{:else}<T id="actions.themes_applies_show" />{/if}
-                </span>
+                <span class="target" title={targetText}>{targetText}</span>
                 <MaterialButton style="padding: 0.2em 0.6em;flex: none;" icon="remove_circle" disabled={!hasBackground} on:click={remove}>
                     <T id="actions.backgrounds_remove" />
                 </MaterialButton>

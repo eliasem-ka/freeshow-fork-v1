@@ -2,7 +2,7 @@
 // This is the electron entry point
 
 import type { Rectangle } from "electron"
-import { tempData } from "./data/tempData"
+import { TEMP_DATA_MARK, tempData } from "./data/tempData"
 import { BrowserWindow, Menu, app, ipcMain, powerSaveBlocker, protocol, screen } from "electron"
 import { AUDIO, BLACKMAGIC, CLOUD, EXPORT, MAIN, NDI, OMT, OUTPUT, STARTUP } from "../types/Channels"
 import { Main } from "../types/IPC/Main"
@@ -240,6 +240,10 @@ function createMain() {
     if (tempData) {
         mainWindow.on("page-title-updated", (e) => e.preventDefault())
         mainWindow.setTitle("FreeShow — TEMPORARY DATA")
+        // the title bar is hidden on macOS, so also mark the window itself
+        mainWindow.webContents.on("did-finish-load", () => {
+            mainWindow?.webContents.insertCSS(TEMP_DATA_MARK).catch(() => null)
+        })
     }
     setMainListeners()
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { filterBooks, filterNumbers, getVerseNumbers, isBookPrefix, isStartOfBookName, normalizeBookText } from "./scripturePicker"
+import { filterBooks, filterNumbers, getVerseNumbers, isBookPrefix, isPickerKey, isStartOfBookName, normalizeBookText } from "./scripturePicker"
 
 const names = ["Génesis", "Éxodo", "Josué", "Jueces", "1 Samuel", "2 Samuel", "Job", "Jeremías", "Joel", "Jonás", "Mateo", "Marcos", "Lucas", "Juan", "Hechos", "Romanos", "1 Corintios", "2 Corintios", "Santiago", "1 Juan", "2 Juan", "3 Juan", "Judas", "Apocalipsis"]
 const books = names.map((name) => ({ name, abbreviation: "" }))
@@ -121,5 +121,15 @@ describe("filterNumbers", () => {
 describe("getVerseNumbers", () => {
     it("lists each verse once when long verses are split in parts", () => {
         expect(getVerseNumbers([{ number: 1 }, { number: 2 }, { number: 2 }, { number: "3" }])).toEqual([1, 2, 3])
+    })
+})
+
+describe("keys the picker takes back", () => {
+    it("takes letters, digits and the text search key", () => {
+        ;["j", "J", "ñ", "é", "1", "0", "/"].forEach((key) => expect(isPickerKey(key)).toBe(true))
+    })
+
+    it("leaves the keys that drive the service to the app", () => {
+        ;[" ", "Enter", "Escape", "ArrowRight", "ArrowLeft", "PageDown", "F1", ".", "-", "Backspace", "Tab", ""].forEach((key) => expect(isPickerKey(key)).toBe(false))
     })
 })

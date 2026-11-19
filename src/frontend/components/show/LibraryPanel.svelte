@@ -36,7 +36,7 @@
     // LIBRARIES (show categories)
 
     $: visible = $sortedShowsList.filter((a) => !$categories[a?.category || ""]?.isArchive && profile[a?.category || ""] !== "none")
-    $: libraries = getLibraries($categories, visible)
+    $: libraries = getLibraries($categories, visible, $dictionary)
     function getLibraries(..._updaters: any[]) {
         const counts: { [key: string]: number } = {}
         let unlabeled = 0

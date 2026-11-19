@@ -3,13 +3,13 @@
     // Large book / chapter / verse tiles, plus a type-to-find box: what is typed narrows the tiles,
     // and as soon as a single option is left it is picked and the box moves on to the next part.
     import { createEventDispatcher, onMount, tick } from "svelte"
-    import { dictionary } from "../../../stores"
+    import { activePopup, dictionary, quickSearchActive } from "../../../stores"
     import { translateText } from "../../../utils/language"
     import { brightenDarkColor, fadeColor } from "../../helpers/color"
     import Icon from "../../helpers/Icon.svelte"
     import T from "../../helpers/T.svelte"
     import Loader from "../../main/Loader.svelte"
-    import { filterBooks, filterNumbers, getVerseNumbers, isBookPrefix, isStartOfBookName, type PickerBook } from "./scripturePicker"
+    import { filterBooks, filterNumbers, getVerseNumbers, isBookPrefix, isPickerKey, isStartOfBookName, type PickerBook } from "./scripturePicker"
 
     export let books: { number: number | string; name: string }[] | null
     export let booksData: { abbreviation?: string; category?: { color?: string } | null }[] = []
@@ -368,6 +368,18 @@
         else handleKey(e.key, e.shiftKey)
     }
 
+    // Escape on an empty picker lets go of the keyboard (so the usual shortcuts work again).
+    // Typing a reference after that comes back here, instead of being lost or switching drawer tabs.
+    function windowKeydown(e: KeyboardEvent) {
+        if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented || e.isComposing) return
+        if (document.activeElement && document.activeElement !== document.body) return
+        if ($activePopup || $quickSearchActive || !isPickerKey(e.key)) return
+        const box = inputElem?.getBoundingClientRect()
+        if (!box || !box.height || box.top > window.innerHeight - 20) return // drawer closed
+        focus()
+        keydown(e)
+    }
+
     export function focus() {
         inputElem?.focus({ preventScroll: true })
     }
@@ -404,6 +416,8 @@
 
     $: hint = textMode ? "scripture.picker_type_text" : step === "book" ? "scripture.picker_type_book" : step === "chapter" ? "scripture.picker_type_chapter" : rangeStart !== null ? "scripture.picker_type_range" : "scripture.picker_type_verse"
 </script>
+
+<svelte:window on:keydown|capture={windowKeydown} />
 
 <div class="picker" role="none" on:click={areaClick}>
     <div class="bar" class:rejected class:waiting>

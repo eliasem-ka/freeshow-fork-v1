@@ -86,3 +86,11 @@ export function getVerseNumbers(verses: { number?: number | string }[]): number[
     })
     return numbers
 }
+
+/**
+ * A key that starts or continues a reference or a phrase: a letter (accents included), a digit or "/".
+ * The picker takes these back when nothing has the keyboard, so typing after Escape is not lost.
+ */
+export function isPickerKey(key: string) {
+    return /^[\p{L}\d/]$/u.test(key)
+}

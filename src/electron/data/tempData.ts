@@ -58,3 +58,9 @@ function setup() {
 
 /** Set when the app runs on throwaway data; null in normal use. */
 export const tempData = setup()
+
+/** Shown in the main window in temporary data mode: an orange line on top and a "TEMP" tag beside the logo. */
+export const TEMP_DATA_MARK = `
+body::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: 3px; background: #f2994a; z-index: 99999; pointer-events: none; }
+body::after { content: "TEMP"; position: fixed; top: 9px; left: 226px; padding: 2px 8px; border-radius: 4px; background: #f2994a; color: #1b1b1b; font: bold 11px/1.4 sans-serif; letter-spacing: 1px; z-index: 99999; pointer-events: none; }
+`

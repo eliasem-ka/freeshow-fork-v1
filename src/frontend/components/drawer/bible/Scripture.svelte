@@ -859,6 +859,9 @@
     }
 
     function keydown(e: KeyboardEvent) {
+        // fork: keys typed in the quick search are not for this drawer (its Enter made a show of the open verse)
+        if ((e.target as HTMLElement | null)?.closest?.(".quicksearch")) return
+
         if (e.key === "Escape") {
             resetContentSearch()
             return

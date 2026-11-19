@@ -11,6 +11,7 @@ export interface Config {
     graphicsDevice: string | null
     /** last GPU problem reported, so it is not repeated every launch */
     gpuHealthNotice?: string
+    macKeepGraphite?: boolean // fork: this Mac lost its GPU with Skia Graphite off (electron/utils/macGraphite.ts)
     autoErrorReporting?: boolean
     mediaFolderPath?: string
 

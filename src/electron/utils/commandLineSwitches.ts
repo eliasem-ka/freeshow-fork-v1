@@ -1,6 +1,8 @@
 // Chromium command-line switches applied before app "ready"
 import { app } from "electron"
+import os from "os"
 import { config } from "../data/store"
+import { chooseMacGraphite, setGraphiteOff } from "./macGraphite"
 
 function appendEnableFeatures(features: string) {
     const existing = app.commandLine.getSwitchValue("enable-features")
@@ -20,10 +22,13 @@ function applyMacSwitches() {
     // Skia Graphite renders pixelated with hardware acceleration on macOS (Chromium bug with
     // downsampling, MSAA, and Retina text/graphics scaling in Chromium 156 / Electron 45),
     // so we use the Ganesh backend. FS_MAC_GRAPHITE=1 keeps Graphite for testing newer Electron versions.
-    if (process.env.FS_MAC_GRAPHITE === "1") {
-        console.info("[MAC] FS_MAC_GRAPHITE=1: Skia Graphite kept enabled")
+    // fork: not where turning it off loses the GPU altogether (see macGraphite.ts)
+    const graphite = chooseMacGraphite(process.env.FS_MAC_GRAPHITE, config.get("macKeepGraphite") === true, os.release())
+    if (graphite.keep) {
+        console.info(`[MAC] Skia Graphite kept enabled (${graphite.reason})`)
         return
     }
+    setGraphiteOff(true)
     app.commandLine.appendSwitch("disable-features", "SkiaGraphite")
 
     // Under Ganesh on macOS, Chromium disables VideoToolbox hardware HEVC decoding unless explicitly

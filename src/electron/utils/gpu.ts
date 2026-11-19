@@ -6,6 +6,7 @@ import { ToMain } from "../../types/IPC/ToMain"
 import { config } from "../data/store"
 import { getMainWindow, hardwareAccelerationDisabled, isLinux, isMac } from "../index"
 import { sendToMain } from "../IPC/main"
+import { shouldLearnGraphite } from "./macGraphite"
 
 // Universal PCI vendor ids
 const PCI_VENDOR_NAMES: { [id: number]: string } = {
@@ -266,6 +267,12 @@ async function runGpuHealthCheck() {
 
     const compositingHw = isHardware(status.gpu_compositing)
     const statusDecodeHw = isHardware(status.video_decode)
+
+    // fork: a Mac that lost its GPU with Skia Graphite off keeps Graphite from its next start on
+    if (shouldLearnGraphite(isMac, compositingHw, hardwareAccelerationDisabled) && config.get("macKeepGraphite") !== true) {
+        config.set("macKeepGraphite", true)
+        console.warn("[GPU-HEALTH] no hardware compositing with Skia Graphite off: Graphite will be kept from the next start")
+    }
     const hwDecodeProbe = await probeHardwareDecode()
     // probe verdict wins; when it couldn't run, fall back to the (optimistic) feature status
     const videoDecodeHw = hwDecodeProbe !== null ? hwDecodeProbe : statusDecodeHw

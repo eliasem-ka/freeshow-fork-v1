@@ -155,24 +155,31 @@ export function getGroupName({ show, showId }: { show: Show | null; showId: stri
 }
 
 // sort by order when just one layout
-function getSortedLayoutSlides(show: Show) {
-    let slides = keysToID(clone(show.slides || {}))
+// fork: only the id and group of each slide are read here, and every slide in the grid asks for this on
+// each slide change, so nothing is deep cloned and the layout order is looked up in a map
+// (a 150 slide show spent over 100 ms per slide change in here)
+export function getSortedLayoutSlides(show: Show): { id: string; group: string | null | undefined }[] {
+    const slides = Object.entries(show.slides || {}).map(([id, slide]) => ({ id, group: slide?.group }))
     if (Object.keys(show.layouts || {}).length > 1) return slides
 
     const layoutSlides = (Object.values(show.layouts || {})[0]?.slides || []).filter(Boolean).map(({ id }) => id)
     if (!layoutSlides.length) return slides
 
-    slides = slides.sort((a, b) => {
-        const idxA = layoutSlides.indexOf(a.id)
-        const idxB = layoutSlides.indexOf(b.id)
-
-        if (idxA !== -1 && idxB !== -1) return idxA - idxB
-        if (idxA !== -1) return -1
-        if (idxB !== -1) return 1
-        return 0
+    // first place of each slide in the layout
+    const order = new Map<string, number>()
+    layoutSlides.forEach((id, index) => {
+        if (!order.has(id)) order.set(id, index)
     })
 
-    return slides
+    return slides.sort((a, b) => {
+        const idxA = order.get(a.id)
+        const idxB = order.get(b.id)
+
+        if (idxA !== undefined && idxB !== undefined) return idxA - idxB
+        if (idxA !== undefined) return -1
+        if (idxB !== undefined) return 1
+        return 0
+    })
 }
 
 // meta
